@@ -18,7 +18,15 @@ The parent must run inside a local Rex session. Children use direct argv, normal
 - `/subagent-takeover` in the child transfers ownership before acknowledging it. The child stays alive across settlement and reload. Ordinary parent cancellation cannot kill it.
 - `continueFrom` forks an earlier, confirmed-exited run's saved session into a new run. It never opens a second live writer on the source session.
 
-Phase 2 admits foreground writers through a machine-wide file queue. A queued run stores `queue` (`checkout` or `capacity`); `waiting` is only a human dialog or trust prompt and is what raises an attention notice. Live child writers exclude one another on overlapping checkouts, including across parents. The active ceiling defaults to 4. Nested launches are refused: the effective depth is 1 until a later phase, whatever `limits.json` says. The parent's `edit` and `write` are refused inside a checkout held by a live child writer; `bash` is not. `/subagents clear` closes this parent's exited, completed, never-taken-over child blocks. `/subagents dismiss <label|run-id>` closes one exited child block. Readers, background delivery, inbox control, and nesting are later phases.
+Phase 2 admits foreground writers through a machine-wide file queue. A queued run stores `queue` (`checkout` or `capacity`); `waiting` is only a human dialog or trust prompt and is what raises an attention notice. Live child writers exclude one another on overlapping checkouts, including across parents. The active ceiling defaults to 4. Nested launches are refused: the effective depth is 1 until phase 6, whatever `limits.json` says. The parent's `edit` and `write` are refused inside a checkout held by a live child writer; `bash` is not. `/subagents clear` closes this parent's exited, completed, never-taken-over child blocks. `/subagents dismiss <label|run-id>` closes one exited child block.
+
+## Phase 3
+
+`access: "read"` launches with `--no-extensions --no-mcp --tools read,grep,find,ls,git_read` and the reporter. Instruction and skill discovery stay. `git_read` is an argv Git tool, registered only in a read child. It allows `log`, `show`, `blame`, `diff`, `ls-files`, `rev-parse`, `status`, `shortlog`, and `grep`, refuses the write and command flags named in the spec including unique long-option prefixes, and runs with an empty attribute source, private empty attributes and hooks, fsmonitor and external diff disabled, `log.showSignature=false`, and every `GIT_*` variable removed. A real Git probe confirmed that `-c log.showSignature=false` stops a repo-configured `gpg.program` from running, while plain `git log --show-signature` on the same commit does run it.
+
+`access: "inspect"` is the normal write environment with `--exclude-tools edit,write`. Admission already counts it as a reader. The parent records a checkout fingerprint after admission and before the Rex launch, and again after confirmed exit. The result's `checkout` field is `clean`, `changed` with a bounded path list and a total count, or `unknown` when the 2 GB / 60 s budget is exceeded or the fingerprint cannot be completed. It never changes the outcome. The text says the checkout changed during the run, not that the child caused it. Children still have no `subagent` tool; a nested launch from an inspector is a phase 6 rule.
+
+Restrictions are re-checked on every `session_start`, including `reload`, and again before the model acts. Pi handles `/reload` as a built-in before extension input, so a child cannot cancel the reload itself. The launch flags live on the session and resource loader and are not cleared by reload. If the callable set is no longer restricted, the reporter claims a failed result naming the extra tools and exits before the model acts.
 
 ## Durable state
 
@@ -55,6 +63,9 @@ pnpm harness admission
 pnpm harness parallel
 pnpm harness recovery
 pnpm harness terminals
+pnpm harness read
+pnpm harness readers
+pnpm harness inspect
 ```
 
 The harness uses real Pi and Rex, independent temporary state/session directories and only disposable Rex sessions it created. Outputs are archived under ignored `.harness-runs/`. Every run checks hashes of global settings, the installed subagent extension and the trust store, plus colon-separated `HARNESS_GUARD_FILES`. Teardown removes only this run's Rex sessions and scratch directory, including on failure. The trust scenario requires the caller's normal `ask` policy and verifies the selected **session-only** option before sending Enter; it must not save a trust decision.
@@ -65,6 +76,7 @@ Testing hooks, not user features:
 
 - `PI_SUBAGENTS_CHILD_NO_DISCOVERY=1` adds `--no-extensions` to children.
 - `PI_SUBAGENTS_CHILD_EXTENSIONS` is a list of additional child extension paths. The harness uses it for narrowly enabled dialog/hold/failure tools and provider-payload faults.
+- `PI_SUBAGENTS_FINGERPRINT_MAX_BYTES` and `PI_SUBAGENTS_FINGERPRINT_MAX_MS` lower the inspect fingerprint budget for tests. `0` milliseconds means unknown immediately. Exceeding either budget reports `unknown`, never `clean`.
 - `PI_SUBAGENTS_LOG_TOOLS` enables child tool-call input logging.
 - The `subagents:test-takeover-claimed` extension-bus event lets a harness extension delay acknowledgement after the durable takeover claim to test cross-process cancellation ordering.
 

@@ -287,7 +287,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     name: "subagent",
     label: "Subagent",
     description:
-      "Delegate one task to a fresh interactive Pi in a background Rex tab and wait for its outcome. Ask for a short final report; have bulk output written to a file the report names. Inherits the parent's effective model and thinking unless overridden. Output is capped at 50 KB / 2000 lines, with the full session path. Phase 1 supports foreground write children only.",
+      "Delegate one task to a fresh interactive Pi in a background Rex tab and wait for its outcome. access is read (only read, grep, find, ls, and git_read), inspect (normal tools except edit and write; the result reports whether the checkout changed during the run), or write. Ask for a short final report; have bulk output written to a file the report names. Inherits the parent's effective model and thinking unless overridden. Output is capped at 50 KB / 2000 lines, with the full session path. background is not supported yet. Nested launches are refused until phase 6; children do not get this tool.",
     parameters: LaunchInput,
     async execute(_id, input, signal, onUpdate, ctx) {
       const run = prepared.get(_id) ?? (await prepareRun(input, ctx));
@@ -320,7 +320,12 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       try {
         const outcome = await runForeground(run, entry, events, signal, progress);
         return {
-          content: [{ type: "text" as const, text: resultText(outcome.run, outcome.result) }],
+          content: [
+            {
+              type: "text" as const,
+              text: resultText(outcome.run, outcome.result, outcome.checkout),
+            },
+          ],
           details: { runId: run.id },
         };
       } catch (error) {

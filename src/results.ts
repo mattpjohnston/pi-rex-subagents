@@ -4,7 +4,7 @@ import {
   truncateHead,
 } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { ResultFile, RunRecord } from "./records.ts";
+import type { CheckoutReport, ResultFile, RunRecord } from "./records.ts";
 
 export function deriveOutcome(
   assistant: Pick<AssistantMessage, "stopReason" | "errorMessage" | "content"> | undefined,
@@ -51,8 +51,20 @@ export function cappedText(text: string): string {
     }).content
   );
 }
-export function resultText(run: RunRecord, result?: ResultFile): string {
+export function checkoutText(checkout: CheckoutReport): string {
+  if (checkout.state === "clean") return "Checkout: clean during the run.";
+  if (checkout.state === "unknown")
+    return `Checkout: unknown${checkout.reason ? ` (${checkout.reason})` : ""}. Not reported as clean.`;
+  const shown = checkout.paths.join(", ") || "(none listed)";
+  const cap =
+    checkout.paths.length < checkout.total
+      ? `${checkout.total} paths, showing ${checkout.paths.length}`
+      : `${checkout.total} path(s)`;
+  return `Checkout changed during the run (${cap}): ${shown}. This records that the checkout changed during the run. It does not say the child caused the change.`;
+}
+export function resultText(run: RunRecord, result?: ResultFile, checkout?: CheckoutReport): string {
   const location = run.location ?? run.rex;
+  const report = checkout ?? result?.checkout;
   return cappedText(
     [
       `Run: ${run.id} (${run.label})`,
@@ -65,6 +77,7 @@ export function resultText(run: RunRecord, result?: ResultFile): string {
       location
         ? `Capture: rex capture -s ${location.sessionId} -b ${location.blockId} --trim --unwrap`
         : "Launch location unknown; do not retry blindly",
+      report ? checkoutText(report) : "",
       run.diagnostic ?? "",
       result?.reason ?? "",
       "",

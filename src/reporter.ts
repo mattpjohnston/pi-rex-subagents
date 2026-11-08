@@ -2,13 +2,17 @@ import { appendFileSync } from "node:fs";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { claim, readClaim, withRunLock } from "./claims.ts";
+import { registerGitRead } from "./git-read.ts";
 import { atomicWrite, type ResultFile, type RunRecord } from "./records.ts";
+import { inspectViolations, readViolations, type ToolSnapshot } from "./restrictions.ts";
 import { deriveOutcome } from "./results.ts";
 import { updateMemberProvider } from "./admission.ts";
 
 export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
   process.umask(0o077);
   let shutdown = false;
+  let halted = false;
+  if (run.access === "read") registerGitRead(pi);
   const log = (type: string, data: Record<string, unknown> = {}): void => {
     appendFileSync(run.paths.events, `${JSON.stringify({ type, at: Date.now(), data })}\n`, {
       mode: 0o600,
@@ -60,6 +64,42 @@ export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
     log("project_trust", { cwd: event.cwd });
     return { trusted: "undecided" };
   });
+  const toolSnapshots = (): ToolSnapshot[] =>
+    pi.getAllTools().map((tool) => ({ name: tool.name, exposure: tool.exposure }));
+  // Pi handles /reload before extension input, so a child cannot cancel it. The launch flags
+  // stay on the session and resource loader. Re-check after reload, before the next model turn,
+  // and exit if the callable set expanded.
+  const enforceRestriction = async (ctx: ExtensionContext, when: string): Promise<void> => {
+    if (run.access !== "read" && run.access !== "inspect") return;
+    const active = pi.getActiveTools();
+    const all = toolSnapshots();
+    const extras =
+      run.access === "read" ? readViolations(active, all) : inspectViolations(active, all);
+    log("tool_set", { when, active, all, extras });
+    if (!extras.length || halted) return;
+    halted = true;
+    const reason = `Restricted tool set violated: ${extras.join(", ")}`;
+    log("tool_restriction", { extras, reason });
+    await withRunLock(run.paths.lock, async () => {
+      if (await readClaim(run.paths.claim)) return;
+      const result: ResultFile = {
+        version: 1,
+        runId: run.id,
+        outcome: "failed",
+        assistantText: "",
+        sessionFile: ctx.sessionManager.getSessionFile() ?? null,
+        effective: settings(ctx),
+        stopReason: null,
+        reason,
+        finishedAt: Date.now(),
+      };
+      await atomicWrite(run.paths.result, result);
+      await claim(run.paths.claim, "result");
+    });
+    ctx.abort();
+    ctx.shutdown();
+    process.exit(1);
+  };
   pi.on("session_start", async (event, ctx) => {
     const winner = await readClaim(run.paths.claim);
     log("session_start", {
@@ -67,11 +107,19 @@ export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
       cwd: ctx.cwd,
       effective: settings(ctx),
       tools: pi.getActiveTools(),
+      allTools: toolSnapshots(),
       trusted: ctx.isProjectTrusted(),
       sessionFile: ctx.sessionManager.getSessionFile() ?? null,
       claim: winner,
     });
-    if (winner === "cancelled" || winner === "result") ctx.shutdown();
+    if (winner === "cancelled" || winner === "result") {
+      ctx.shutdown();
+      return;
+    }
+    await enforceRestriction(ctx, event.reason);
+  });
+  pi.on("before_agent_start", async (_event, ctx) => {
+    await enforceRestriction(ctx, "before_agent_start");
   });
   pi.on("model_select", async (event) => {
     await updateMemberProvider(run.id, event.model.provider);
@@ -82,15 +130,29 @@ export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
   pi.on("ui_prompt_end", () => {
     log("ui_prompt_end");
   });
-  if (process.env.PI_SUBAGENTS_LOG_TOOLS)
-    pi.on("tool_call", (event) => {
+  pi.on("tool_call", async (event, ctx) => {
+    if (process.env.PI_SUBAGENTS_LOG_TOOLS)
       log("tool_call", {
         name: event.toolName,
         input: event.input,
         toolCallId: event.toolCallId,
         parentToolCallId: event.parentToolCallId,
       });
-    });
+    if (halted) return { block: true, reason: "Restricted child is shutting down" };
+    if (run.access !== "read" && run.access !== "inspect") return;
+    const called =
+      run.access === "read"
+        ? readViolations([event.toolName], [{ name: event.toolName, exposure: "direct" }])
+        : inspectViolations([event.toolName], [{ name: event.toolName, exposure: "direct" }]);
+    const extras =
+      run.access === "read"
+        ? readViolations(pi.getActiveTools(), toolSnapshots())
+        : inspectViolations(pi.getActiveTools(), toolSnapshots());
+    const banned = [...new Set([...called, ...extras])];
+    if (!banned.length) return;
+    await enforceRestriction(ctx, "tool_call");
+    return { block: true, reason: `Restricted tool set violated: ${banned.join(", ")}` };
+  });
   pi.on("agent_settled", async (event, ctx) => {
     log("agent_settled", { aborted: event.aborted, shutdown });
     if (!shutdown) await settle(ctx, event.aborted);

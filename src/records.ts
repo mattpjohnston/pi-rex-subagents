@@ -121,6 +121,16 @@ export const RunRecord = Type.Object(
   object,
 );
 export type RunRecord = Static<typeof RunRecord>;
+export const CheckoutReport = Type.Object(
+  {
+    state: Type.Union([Type.Literal("clean"), Type.Literal("changed"), Type.Literal("unknown")]),
+    paths: Type.Array(Type.String()),
+    total: Type.Integer({ minimum: 0 }),
+    reason: Type.Optional(Type.String()),
+  },
+  object,
+);
+export type CheckoutReport = Static<typeof CheckoutReport>;
 export const ResultFile = Type.Object(
   {
     version: Type.Literal(1),
@@ -137,6 +147,7 @@ export const ResultFile = Type.Object(
     stopReason: nullableText,
     reason: nullableText,
     finishedAt: Type.Number(),
+    checkout: Type.Optional(CheckoutReport),
   },
   object,
 );

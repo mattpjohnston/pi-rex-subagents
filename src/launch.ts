@@ -1,12 +1,13 @@
 import { randomBytes } from "node:crypto";
 import { open, writeFile } from "node:fs/promises";
-import { dirname, delimiter, resolve } from "node:path";
+import { dirname, delimiter, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { Type, type Static } from "typebox";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   Thinking,
   ChildEvent,
+  atomicWrite,
   errorText,
   isMissing,
   parse,
@@ -18,6 +19,7 @@ import {
   stateDir,
   transition,
   writeRun,
+  type CheckoutReport,
   type ResultFile,
   RunRecord,
   type ModelSettings,
@@ -25,6 +27,7 @@ import {
 import { claim, readClaim, withAdmissionLock, withRunLock } from "./claims.ts";
 import { admit, removeTicket } from "./admission.ts";
 import { checkoutRoot } from "./checkout.ts";
+import { captureFingerprint, compareFingerprints, type Fingerprint } from "./fingerprint.ts";
 import { executable, resolveSettings, workingDirectory } from "./settings.ts";
 import {
   object,
@@ -60,8 +63,6 @@ export const SHUTDOWN_MS = 10_000;
 export const CANCELLATION_MS = 30_000;
 
 export async function prepareRun(input: LaunchInput, ctx: ExtensionContext): Promise<RunRecord> {
-  if (input.access && input.access !== "write")
-    throw new Error(`${input.access} access is not yet supported`);
   if (input.background) throw new Error("Background subagents are not yet supported");
   if (process.env.PI_SUBAGENTS_RUN_ID)
     throw new Error(
@@ -111,7 +112,7 @@ export async function prepareRun(input: LaunchInput, ctx: ExtensionContext): Pro
     taskPath: resolve(dirname(paths.run), "task.md"),
     cwd,
     checkoutRoot: root,
-    access: "write",
+    access: input.access ?? "write",
     requested: settings.requested,
     effective: settings.effective,
     background: false,
@@ -142,6 +143,10 @@ export async function childArgv(run: RunRecord, entry: string): Promise<string[]
   for (const key of [
     "PI_SUBAGENTS_STATE_DIR",
     "PI_SUBAGENTS_LOG_TOOLS",
+    "HARNESS_TOOL_LOG",
+    "HARNESS_EXTRA_MARKER",
+    "HARNESS_INSPECT_MARKER",
+    "HARNESS_INSPECT_RESULT",
     "PI_SUBAGENTS_PI",
     "PI_SUBAGENTS_REX",
     "PI_CODING_AGENT_DIR",
@@ -158,11 +163,15 @@ export async function childArgv(run: RunRecord, entry: string): Promise<string[]
     run.paths.sessionDir,
     "--name",
     run.label,
-    "-e",
-    entry,
   ];
+  if (run.access === "read")
+    args.push("--no-extensions", "--no-mcp", "--tools", "read,grep,find,ls,git_read");
+  else if (run.access === "inspect") args.push("--exclude-tools", "edit,write");
+  args.push("-e", entry);
   // Testing hooks only: isolate child discovery and load scenario fault tools, not user features.
-  if (process.env.PI_SUBAGENTS_CHILD_NO_DISCOVERY === "1") args.push("--no-extensions");
+  // read already passes --no-extensions. inspect keeps discovered extensions unless the hook says otherwise.
+  if (run.access !== "read" && process.env.PI_SUBAGENTS_CHILD_NO_DISCOVERY === "1")
+    args.push("--no-extensions");
   for (const extension of (process.env.PI_SUBAGENTS_CHILD_EXTENSIONS ?? "")
     .split(delimiter)
     .filter(Boolean))
@@ -295,13 +304,48 @@ export function observeRexEvent(run: RunRecord, event: BlockEvent): void {
   }
 }
 
+async function finishCheckout(
+  run: RunRecord,
+  before: Fingerprint | undefined,
+): Promise<CheckoutReport | undefined> {
+  if (!before) return undefined;
+  const after =
+    run.process.state === "exited"
+      ? await captureFingerprint(run.checkoutRoot).catch((error: unknown): Fingerprint => ({
+          version: 1,
+          state: "unknown",
+          reason: errorText(error),
+        }))
+      : {
+          version: 1 as const,
+          state: "unknown" as const,
+          reason: "Process exit was not confirmed",
+        };
+  const dir = dirname(run.paths.run);
+  await atomicWrite(join(dir, "fingerprint-after.json"), after);
+  const checkout = compareFingerprints(before, after);
+  await atomicWrite(join(dir, "checkout.json"), checkout);
+  try {
+    const result = await readResult(run);
+    await atomicWrite(run.paths.result, { ...result, checkout });
+  } catch (error) {
+    if (isMissing(error) || error instanceof SyntaxError) return checkout;
+    if (
+      error instanceof Error &&
+      (error.message.startsWith("Invalid persisted") || error.message.startsWith("Result run ID"))
+    )
+      return checkout;
+    throw error;
+  }
+  return checkout;
+}
 export async function runForeground(
   run: RunRecord,
   entry: string,
   events: RexEvents,
   signal: AbortSignal | undefined,
   progress: Progress,
-): Promise<{ run: RunRecord; result?: ResultFile }> {
+): Promise<{ run: RunRecord; result?: ResultFile; checkout?: CheckoutReport }> {
   progress(run);
   const admitted = await admit(run, signal, progress);
   if (!admitted || signal?.aborted) {
@@ -314,6 +358,15 @@ export async function runForeground(
   transition(run, "starting");
   await writeRun(run);
   progress(run);
+  let before: Fingerprint | undefined;
+  if (run.access === "inspect") {
+    try {
+      before = await captureFingerprint(run.checkoutRoot);
+    } catch (error) {
+      before = { version: 1, state: "unknown", reason: errorText(error) };
+    }
+    await atomicWrite(join(dirname(run.paths.run), "fingerprint-before.json"), before);
+  }
   await requireLocalRex();
   const argv = await childArgv(run, entry);
   let launch: unknown;
@@ -352,7 +405,7 @@ export async function runForeground(
     run.diagnostic = `Uncertain Rex launch: ${errorText(error)}. Not retried.`;
     transition(run, "failed");
     await writeRun(run);
-    return { run };
+    return { run, checkout: await finishCheckout(run, before) };
   }
   await writeRun(run);
   events.watch(run.rex.blockId);
@@ -399,7 +452,7 @@ export async function runForeground(
         run.queue = null;
         await writeRun(run);
         progress(run);
-        return { run };
+        return { run, checkout: await finishCheckout(run, before) };
       }
       if (winner === "result" && !resultDeadline) {
         resultDeadline = Date.now() + SHUTDOWN_MS;
@@ -467,7 +520,9 @@ export async function runForeground(
     run.queue = null;
     await writeRun(run);
     progress(run);
-    return { run, ...(result ? { result } : {}) };
+    const checkout = await finishCheckout(run, before);
+    if (checkout && result) result = { ...result, checkout };
+    return { run, ...(result ? { result } : {}), ...(checkout ? { checkout } : {}) };
   } finally {
     events.changes.off(blockId, listener);
   }
