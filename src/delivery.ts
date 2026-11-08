@@ -109,13 +109,12 @@ export function endsWithUnansweredDelivery(branch: readonly BranchNode[]): boole
 }
 
 /**
- * A taken-over claim is the outcome at once, matching the foreground return. The process is
- * meant to stay live, so the exit and grace clauses apply to result and cancelled claims.
+ * Exit or an ended shutdown grace makes a claimed outcome pending. A live taken-over process
+ * is not pending: the spec keeps that process running, and delivery waits until it exits.
  * A terminal record with no claim is a startup or reporter failure and is still an outcome.
  */
 export function outcomeReady(run: RunRecord, claim: Claim | null): boolean {
   if (!run.background) return false;
-  if (claim === "taken_over") return true;
   const settled = run.process.state === "exited" || run.process.state === "unresolved";
   if (claim) return settled;
   return settled && isTerminal(run.lifecycle);

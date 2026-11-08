@@ -156,7 +156,8 @@ it("decides replacement, cancellation, and append without treating takeover as o
   expect(shouldAppend(live, "parent")).toBe(false);
   expect(outcomeReady(run({ process: { state: "unresolved", pid: 9 } }), "cancelled")).toBe(true);
   expect(outcomeReady(run(), "result")).toBe(false);
-  expect(outcomeReady(run(), "taken_over")).toBe(true);
+  expect(outcomeReady(run(), "taken_over")).toBe(false);
+  expect(outcomeReady(run({ process: { state: "exited", code: 0 } }), "taken_over")).toBe(true);
   expect(outcomeReady(run({ background: false }), "result")).toBe(false);
 });
 

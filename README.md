@@ -28,6 +28,18 @@ Phase 2 admits foreground writers through a machine-wide file queue. A queued ru
 
 Restrictions are re-checked on every `session_start`, including `reload`, and again before the model acts. Pi handles `/reload` as a built-in before extension input, so a child cannot cancel the reload itself. The launch flags live on the session and resource loader and are not cleared by reload. If the callable set is no longer restricted, the reporter claims a failed result naming the extra tools and exits before the model acts.
 
+## Phase 4
+
+`background: true` returns the run ID once the run is admitted or queued. The lifecycle and run record are the same as a foreground run; the result arrives later. Use background for long work or work the human may redirect the parent around. Foreground remains the default for a short fan-out whose results the current turn needs.
+
+A second load of this extension in one runtime does nothing. `/reload` invalidates that runtime and the reloaded factory registers normally, so a discovered copy plus `-e` does not install two reporters or two `subagent` tools.
+
+Pending outcomes are derived from the run records and the parent session, not from extension memory. A background outcome is pending once its claim exists and process exit is confirmed, or the shutdown grace has ended with the process unresolved. A live `taken_over` claim is not pending; delivery waits until that process exits. Delivery is one `subagent-results` custom message, `triggerTurn: true`, `deliverAs: "followUp"`, listing run ID, outcome, capped text, the inspect checkout field, and the session path. The whole message is capped at 50 KB / 2000 lines; entries that do not fit are run ID, outcome, and result path. A busy parent receives nothing until `agent_settled`. An idle parent waits about one second, then one message. Reconciliation on `session_start` and `session_tree` delivers pending outcomes whose run IDs are not on the active branch.
+
+Pi's `getBranch()` still contains entries a compaction has summarized. Compaction `details` only store read and modified files, so a summarized delivery is recognized from the `subagent-results` entry on the branch path, not from the compaction record. If the active branch ends with that entry and no response follows, reconciliation starts one turn with a short note instead of sending the results again.
+
+`/reload` keeps parent-owned background children running and the reloaded runtime reattaches. `quit` cancels them through their claims and appends undelivered outcomes without a turn. `/new` and `/resume` are refused in `session_before_switch`, and `/fork` and `/clone` in `session_before_fork`, while this session has live or queued parent-owned children or undelivered outcomes, unless the human confirms. Confirmation cancels those children and appends every outcome to the old session before the switch. A taken-over child is never cancelled. A crash does nothing. `/subagents cancel <label|run-id>` cancels a queued or running background run of this parent. The widget and `/subagents` include background runs and a pending-delivery count.
+
 ## Durable state
 
 State defaults to `getAgentDir()/subagents`, overridable with `PI_SUBAGENTS_STATE_DIR`. Directories are private (`0700`), files private (`0600`). Each `runs/<run-id>/` contains:
@@ -66,11 +78,17 @@ pnpm harness terminals
 pnpm harness read
 pnpm harness readers
 pnpm harness inspect
+pnpm harness double-load
+pnpm harness background
+pnpm harness background-cap
+pnpm harness background-reload
+pnpm harness background-switch
+pnpm harness compose
 ```
 
 The harness uses real Pi and Rex, independent temporary state/session directories and only disposable Rex sessions it created. Outputs are archived under ignored `.harness-runs/`. Every run checks hashes of global settings, the installed subagent extension and the trust store, plus colon-separated `HARNESS_GUARD_FILES`. Teardown removes only this run's Rex sessions and scratch directory, including on failure. The trust scenario requires the caller's normal `ask` policy and verifies the selected **session-only** option before sending Enter; it must not save a trust decision.
 
-`HARNESS_MODEL` selects the test model, defaulting to `openrouter/nvidia/nemotron-3.5-lightning:free`. The launch scenario exercises inheritance and an explicit provider/model selection. The parallel scenario's parent uses `HARNESS_PARENT_MODEL`, defaulting to `anthropic/claude-haiku-4-5`, because the free model has omitted required `cwd` values; its children still use `HARNESS_MODEL`. `HARNESS_FAILURE_CASE` optionally selects one failure case during debugging; omit it to run the entire failure matrix. Provider authentication errors are not expected failures and must stop testing.
+`HARNESS_MODEL` selects the test model, defaulting to `openrouter/nvidia/nemotron-3.5-lightning:free`. The launch scenario exercises inheritance and an explicit provider/model selection. Parallel and compose parents use `HARNESS_PARENT_MODEL` when it is set, and otherwise the harness model. Their children still use `HARNESS_MODEL`. `HARNESS_FAILURE_CASE` optionally selects one failure case during debugging; omit it to run the entire failure matrix. Provider authentication errors are not expected failures and must stop testing.
 
 Testing hooks, not user features:
 
@@ -78,6 +96,7 @@ Testing hooks, not user features:
 - `PI_SUBAGENTS_CHILD_EXTENSIONS` is a list of additional child extension paths. The harness uses it for narrowly enabled dialog/hold/failure tools and provider-payload faults.
 - `PI_SUBAGENTS_FINGERPRINT_MAX_BYTES` and `PI_SUBAGENTS_FINGERPRINT_MAX_MS` lower the inspect fingerprint budget for tests. `0` milliseconds means unknown immediately. Exceeding either budget reports `unknown`, never `clean`.
 - `PI_SUBAGENTS_LOG_TOOLS` enables child tool-call input logging.
+- `PI_SUBAGENTS_COALESCE_MS` overrides the idle background delivery window. The default is 1000. The harness sets a longer window only to reload during it, and zero only to make a delivery immediate before a controlled kill.
 - The `subagents:test-takeover-claimed` extension-bus event lets a harness extension delay acknowledgement after the durable takeover claim to test cross-process cancellation ordering.
 
 The optional `defaultProjectTrust: "always"` check in a separate agent directory is not part of the current trust scenario. A taken-over child keeps its reservation until its process exits; the recovery scenario checks that release.
