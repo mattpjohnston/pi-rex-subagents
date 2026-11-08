@@ -32,8 +32,8 @@ export default async function parallel(): Promise<void> {
         PI_SUBAGENTS_CHILD_EXTENSIONS: join(repo, "harness/child-tools.ts"),
         PI_SUBAGENTS_LOG_TOOLS: "1",
       });
-      // The default free parent model has omitted required cwd values. A logged-in small model copies the batch.
-      const parentModel = process.env.HARNESS_PARENT_MODEL ?? "anthropic/claude-haiku-4-5";
+      // Free models occasionally drop a copied field; HARNESS_PARENT_MODEL selects a steadier parent.
+      const parentModel = process.env.HARNESS_PARENT_MODEL ?? childModel;
       const modelFlag = argv.indexOf("--model");
       if (modelFlag >= 0) argv[modelFlag + 1] = parentModel;
       const parent = await run.newSession("parallel-parent", argv);
