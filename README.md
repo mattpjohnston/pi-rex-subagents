@@ -59,7 +59,7 @@ pnpm harness terminals
 
 The harness uses real Pi and Rex, independent temporary state/session directories and only disposable Rex sessions it created. Outputs are archived under ignored `.harness-runs/`. Every run checks hashes of global settings, the installed subagent extension and the trust store, plus colon-separated `HARNESS_GUARD_FILES`. Teardown removes only this run's Rex sessions and scratch directory, including on failure. The trust scenario requires the caller's normal `ask` policy and verifies the selected **session-only** option before sending Enter; it must not save a trust decision.
 
-`HARNESS_MODEL` selects the test model, defaulting to `openrouter/nvidia/nemotron-3.5-lightning:free`. The launch scenario exercises inheritance and an explicit provider/model selection. `HARNESS_FAILURE_CASE` optionally selects one failure case during debugging; omit it to run the entire failure matrix. Provider authentication errors are not expected failures and must stop testing.
+`HARNESS_MODEL` selects the test model, defaulting to `openrouter/nvidia/nemotron-3.5-lightning:free`. The launch scenario exercises inheritance and an explicit provider/model selection. The parallel scenario's parent uses `HARNESS_PARENT_MODEL`, defaulting to `anthropic/claude-haiku-4-5`, because the free model has omitted required `cwd` values; its children still use `HARNESS_MODEL`. `HARNESS_FAILURE_CASE` optionally selects one failure case during debugging; omit it to run the entire failure matrix. Provider authentication errors are not expected failures and must stop testing.
 
 Testing hooks, not user features:
 

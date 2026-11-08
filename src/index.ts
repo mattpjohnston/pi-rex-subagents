@@ -8,7 +8,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { contains } from "./admission-core.ts";
 import { writerOnPath } from "./admission.ts";
-import { canonicalTarget } from "./checkout.ts";
+import { canonicalTarget, checkoutRoot } from "./checkout.ts";
+import { workingDirectory } from "./settings.ts";
 import { clearEligible, dismiss } from "./terminals.ts";
 import { registerReporter } from "./reporter.ts";
 import {
@@ -46,6 +47,31 @@ export function progressUpdate(run: RunRecord): { text: string; attention: strin
   return { text: attention ?? statusLine(run), attention };
 }
 
+async function sameMessageWriter(
+  ctx: ExtensionContext,
+  target: string,
+): Promise<{ id: string; label: string; checkoutRoot: string } | null> {
+  // Preflight prepares each call before the next start, so a write listed first must still
+  // see later launches in this assistant message.
+  for (const entry of ctx.sessionManager.getBranch().toReversed()) {
+    if (entry.type !== "message") continue;
+    if (entry.message.role !== "assistant" || !Array.isArray(entry.message.content)) return null;
+    for (const part of entry.message.content) {
+      if (part.type !== "toolCall" || part.name !== "subagent") continue;
+      const access = part.arguments.access;
+      if (access === "read" || access === "inspect") continue;
+      const label =
+        typeof part.arguments.label === "string" && part.arguments.label.trim()
+          ? part.arguments.label.trim()
+          : "pending launch";
+      const cwd = typeof part.arguments.cwd === "string" ? part.arguments.cwd : undefined;
+      const root = await checkoutRoot(await workingDirectory(ctx.cwd, cwd));
+      if (contains(root, target)) return { id: part.id, label, checkoutRoot: root };
+    }
+    return null;
+  }
+  return null;
+}
 export default async function (pi: ExtensionAPI): Promise<void> {
   const childId = process.env.PI_SUBAGENTS_RUN_ID;
   if (childId || process.env.PI_SUBAGENTS_RUN_DIR) {
@@ -64,15 +90,29 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   const events = new RexEvents();
   const active = new Map<string, RunRecord>();
   const prepared = new Map<string, RunRecord>();
-  // Pi emits every sibling start before preflight. Reserve the intended checkout in this
-  // runtime too, so a sibling edit cannot race a launch that has not reached admission yet.
+  // The runner swallows a start-handler error, so record the checkout before prepareRun can throw.
+  // A rejected launch in this message must still refuse a sibling edit or write.
+  const intended = new Map<string, { id: string; label: string; checkoutRoot: string }>();
   pi.on("tool_execution_start", async (event, ctx) => {
     if (event.toolName !== "subagent") return;
-    const run = await prepareRun(parse(LaunchInput, event.args), ctx);
+    const input = parse(LaunchInput, event.args);
+    const root = await checkoutRoot(await workingDirectory(ctx.cwd, input.cwd));
+    intended.set(event.toolCallId, {
+      id: event.toolCallId,
+      label: input.label?.trim() || "pending launch",
+      checkoutRoot: root,
+    });
+    const run = await prepareRun(input, ctx);
+    intended.set(event.toolCallId, {
+      id: run.id,
+      label: run.label,
+      checkoutRoot: run.checkoutRoot,
+    });
     prepared.set(event.toolCallId, run);
     active.set(run.id, run);
   });
   pi.on("tool_execution_end", async (event) => {
+    intended.delete(event.toolCallId);
     const run = prepared.get(event.toolCallId);
     if (!run) return;
     prepared.delete(event.toolCallId);
@@ -92,12 +132,15 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     try {
       const target = await canonicalTarget(ctx.cwd, event.input.path);
       const writer =
+        (await sameMessageWriter(ctx, target)) ??
+        [...intended.values()].find((run) => contains(run.checkoutRoot, target)) ??
         [...active.values()].find(
           (run) =>
             run.access === "write" &&
             run.lifecycle === "admitting" &&
             contains(run.checkoutRoot, target),
-        ) ?? (await writerOnPath(target));
+        ) ??
+        (await writerOnPath(target));
       if (writer)
         return {
           block: true,
