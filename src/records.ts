@@ -58,7 +58,12 @@ export const Location = Type.Object({ sessionId: text, windowId: text, blockId: 
 export type Location = Static<typeof Location>;
 export const Waiting = Type.Object(
   {
-    source: Type.Union([Type.Literal("reporter"), Type.Literal("rex"), Type.Literal("trust")]),
+    source: Type.Union([
+      Type.Literal("reporter"),
+      Type.Literal("rex"),
+      Type.Literal("trust"),
+      Type.Literal("admission"),
+    ]),
     kind: text,
     title: text,
     since: Type.Number(),

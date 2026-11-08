@@ -186,3 +186,10 @@ export class RexEvents {
     this.changes.removeAllListeners();
   }
 }
+
+/** Exact block only: never fall back to the former window, pane focus, or a label. */
+export async function closeBlock(location: Location): Promise<void> {
+  const reply = await command(["block", "close", "-s", location.sessionId, location.blockId]);
+  if (reply.code !== 0 && reply.code !== 3)
+    throw new Error(`Rex block close exit ${reply.code}: ${reply.stderr}`);
+}

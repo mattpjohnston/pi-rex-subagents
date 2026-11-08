@@ -4,6 +4,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { claim, readClaim, withRunLock } from "./claims.ts";
 import { atomicWrite, type ResultFile, type RunRecord } from "./records.ts";
 import { deriveOutcome } from "./results.ts";
+import { updateMemberProvider } from "./admission.ts";
 
 export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
   process.umask(0o077);
@@ -71,6 +72,9 @@ export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
       claim: winner,
     });
     if (winner === "cancelled" || winner === "result") ctx.shutdown();
+  });
+  pi.on("model_select", async (event) => {
+    await updateMemberProvider(run.id, event.model.provider);
   });
   pi.on("ui_prompt_start", (event) => {
     log("ui_prompt_start", { kind: event.kind, title: event.title ?? "Pi dialog" });

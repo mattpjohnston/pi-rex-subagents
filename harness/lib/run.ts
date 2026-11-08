@@ -58,6 +58,8 @@ export async function withRun(scenario: string, body: (run: Run) => Promise<void
     throw new Error(`Leftover harness sessions; refusing to start: ${JSON.stringify(stale)}`);
 
   const scratch = await mkdtemp(join(tmpdir(), "pi-rex-subagents-"));
+  const previousStateDir = process.env.PI_SUBAGENTS_STATE_DIR;
+  process.env.PI_SUBAGENTS_STATE_DIR = join(scratch, "state");
   const state = join(scratch, "state");
   const sessions = join(scratch, "sessions");
   const out = join(scratch, "out");
@@ -109,6 +111,8 @@ export async function withRun(scenario: string, body: (run: Run) => Promise<void
     errors.push(error);
   } finally {
     await teardown();
+    if (previousStateDir === undefined) delete process.env.PI_SUBAGENTS_STATE_DIR;
+    else process.env.PI_SUBAGENTS_STATE_DIR = previousStateDir;
   }
   async function teardown(): Promise<void> {
     for (const [index, block] of ownedBlocks.entries()) {

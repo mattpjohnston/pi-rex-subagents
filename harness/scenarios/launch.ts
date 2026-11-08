@@ -15,7 +15,13 @@ export default async function launch(): Promise<void> {
     );
     for (const override of [false, true]) {
       const label = override ? "override" : "inherit";
-      const model = process.env.HARNESS_MODEL ?? "openrouter/nvidia/nemotron-3.5-lightning:free";
+      const parentModel =
+        process.env.HARNESS_MODEL ?? "openrouter/nvidia/nemotron-3.5-lightning:free";
+      const model = override
+        ? (process.env.HARNESS_OVERRIDE_MODEL ??
+          "openrouter/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free")
+        : parentModel;
+      if (override) assert.notEqual(model, parentModel, "Override must differ from parent model");
       const slash = model.indexOf("/");
       const launched = await start(run, {
         label,

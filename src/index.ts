@@ -1,12 +1,21 @@
 import { realpath } from "node:fs/promises";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+  isToolCallEventType,
+  type ExtensionAPI,
+  type ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
+import { contains } from "./admission-core.ts";
+import { writerOnPath } from "./admission.ts";
+import { canonicalTarget } from "./checkout.ts";
+import { clearEligible, dismiss } from "./terminals.ts";
 import { registerReporter } from "./reporter.ts";
 import {
   errorText,
   isTerminal,
   listRuns,
+  parse,
   readRun,
   runDirectory,
   transition,
@@ -22,7 +31,7 @@ const live = (run: RunRecord) => !isTerminal(run.lifecycle) || run.process.state
 const waitingFirst = (a: RunRecord, b: RunRecord) =>
   Number(Boolean(b.waiting)) - Number(Boolean(a.waiting)) || a.createdAt - b.createdAt;
 export function statusLine(run: RunRecord): string {
-  return `${run.label} [${run.access}] ${run.waiting ? `waiting for a human: ${run.waiting.kind} — ${run.waiting.title}` : run.lifecycle}`;
+  return `${run.label} [${run.access}] ${run.waiting ? (run.waiting.source === "admission" ? `waiting for admission: ${run.waiting.title}` : `waiting for a human: ${run.waiting.kind} — ${run.waiting.title}`) : run.lifecycle}`;
 }
 export function attentionText(run: RunRecord): string {
   return `${statusLine(run)}. Open /subagents go ${run.label}.${run.waiting?.kind === "project_trust" ? ' Pi’s "Trust parent folder" option can cover later worktrees under that root.' : ""}`;
@@ -45,6 +54,50 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   }
   const events = new RexEvents();
   const active = new Map<string, RunRecord>();
+  const prepared = new Map<string, RunRecord>();
+  // Pi emits every sibling start before preflight. Reserve the intended checkout in this
+  // runtime too, so a sibling edit cannot race a launch that has not reached admission yet.
+  pi.on("tool_execution_start", async (event, ctx) => {
+    if (event.toolName !== "subagent") return;
+    const run = await prepareRun(parse(LaunchInput, event.args), ctx);
+    prepared.set(event.toolCallId, run);
+    active.set(run.id, run);
+  });
+  pi.on("tool_execution_end", async (event) => {
+    const run = prepared.get(event.toolCallId);
+    if (!run) return;
+    prepared.delete(event.toolCallId);
+    active.delete(run.id);
+    // A blocked or aborted preflight never executes the launch tool.
+    if (run.lifecycle === "admitting") {
+      await cancel(run);
+      transition(run, "cancelled");
+      run.process = { state: "exited", code: null };
+      run.waiting = null;
+      await writeRun(run);
+    }
+  });
+  pi.on("tool_call", async (event, ctx) => {
+    if (!isToolCallEventType("edit", event) && !isToolCallEventType("write", event)) return;
+    try {
+      const target = await canonicalTarget(ctx.cwd, event.input.path);
+      const writer =
+        [...active.values()].find(
+          (run) =>
+            run.access === "write" &&
+            run.lifecycle === "admitting" &&
+            contains(run.checkoutRoot, target),
+        ) ?? (await writerOnPath(target));
+      if (writer)
+        return {
+          block: true,
+          reason: `Child writer ${writer.id} (${writer.label}) holds checkout ${writer.checkoutRoot}; parent edit/write refused`,
+        };
+    } catch (error) {
+      return { block: true, reason: `Cannot check child writer guard: ${errorText(error)}` };
+    }
+    return;
+  });
   let widget: ReturnType<typeof setInterval> | undefined;
   let refreshing = false;
   let context: ExtensionContext | undefined;
@@ -63,6 +116,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         }
       }
       const lines = runs.filter(live).sort(waitingFirst).slice(0, 20).map(statusLine);
+      const clearable = (await Promise.all(runs.map(clearEligible))).filter(Boolean).length;
+      if (clearable)
+        lines.push(`${clearable} exited completed child terminal(s): /subagents clear`);
       ctx.ui.setWidget("subagents", lines.length ? lines : undefined);
     } catch (error) {
       ctx.ui.setStatus("subagents", `Subagent records: ${errorText(error)}`);
@@ -88,6 +144,32 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       "List this parent's runs; all lists every live child; go <label> selects its current Rex tab",
     handler: async (args, ctx) => {
       const all = (await listRuns()).sort(waitingFirst);
+      const owned = all.filter((run) => run.parentSessionId === ctx.sessionManager.getSessionId());
+      if (args === "clear" || args.startsWith("dismiss ")) {
+        const target = args.slice("dismiss ".length).trim();
+        const selected =
+          args === "clear"
+            ? (
+                await Promise.all(
+                  owned.map(async (run) => ((await clearEligible(run)) ? run : null)),
+                )
+              ).filter((run) => run !== null)
+            : owned.filter((run) => run.id === target || run.label === target);
+        if (args !== "clear" && selected.length !== 1) {
+          ctx.ui.notify(
+            "Dismiss requires exactly one child label or run ID belonging to this parent",
+            "error",
+          );
+          return;
+        }
+        for (const run of selected) await dismiss(run);
+        ctx.ui.notify(
+          `${selected.length} exited child terminal(s) dismissed; artifacts retained`,
+          "info",
+        );
+        await refresh(ctx);
+        return;
+      }
       if (args.startsWith("go ")) {
         const label = args.slice(3).trim();
         const matches = all.filter(
@@ -116,7 +198,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         return;
       }
       if (args && args !== "all") {
-        ctx.ui.notify("Usage: /subagents [all | go <label>]", "error");
+        ctx.ui.notify(
+          "Usage: /subagents [all | go <label> | clear | dismiss <label|run-id>]",
+          "error",
+        );
         return;
       }
       const selected = all.filter((run) =>
@@ -152,10 +237,13 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       "Delegate one task to a fresh interactive Pi in a background Rex tab and wait for its outcome. Ask for a short final report; have bulk output written to a file the report names. Inherits the parent's effective model and thinking unless overridden. Output is capped at 50 KB / 2000 lines, with the full session path. Phase 1 supports foreground write children only.",
     parameters: LaunchInput,
     async execute(_id, input, signal, onUpdate, ctx) {
-      const run = await prepareRun(input, ctx);
+      const run = prepared.get(_id) ?? (await prepareRun(input, ctx));
       active.set(run.id, run);
       const progress = (current: RunRecord) => {
-        const text = current.waiting ? attentionText(current) : statusLine(current);
+        const text =
+          current.waiting && current.waiting.source !== "admission"
+            ? attentionText(current)
+            : statusLine(current);
         onUpdate?.({ content: [{ type: "text", text }], details: { runId: current.id } });
         const previous = notices.get(run.id);
         if (current.waiting && text !== previous) {
@@ -184,8 +272,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         };
       } catch (error) {
         run.diagnostic = errorText(error);
+        if (run.lifecycle === "admitting") await cancel(run);
+        // An admitted launch with no reply may still exist in Rex. Never invent exit proof.
+        if (run.lifecycle === "admitting") run.process = { state: "exited", code: null };
         if (!isTerminal(run.lifecycle)) transition(run, "failed");
-        if (!run.rex) run.process = { state: "exited", code: null };
         await writeRun(run);
         throw error;
       } finally {

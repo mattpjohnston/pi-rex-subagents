@@ -22,12 +22,14 @@ import {
   RunRecord,
   type ModelSettings,
 } from "./records.ts";
-import { claim, readClaim, withRunLock } from "./claims.ts";
-import { admit } from "./admission.ts";
+import { claim, readClaim, withAdmissionLock, withRunLock } from "./claims.ts";
+import { admit, removeTicket } from "./admission.ts";
 import { checkoutRoot } from "./checkout.ts";
 import { executable, resolveSettings, workingDirectory } from "./settings.ts";
 import {
   object,
+  locate,
+  closeBlock,
   observeProcess,
   requireLocalRex,
   rexJson,
@@ -61,6 +63,10 @@ export async function prepareRun(input: LaunchInput, ctx: ExtensionContext): Pro
   if (input.access && input.access !== "write")
     throw new Error(`${input.access} access is not yet supported`);
   if (input.background) throw new Error("Background subagents are not yet supported");
+  if (process.env.PI_SUBAGENTS_RUN_ID)
+    throw new Error(
+      "Nested launch refused: phase 2 effective depth is 1 regardless of limits.json; nesting arrives in phase 6",
+    );
   if (!input.task.trim()) throw new Error("Subagent task must not be empty");
   if (!process.env.REX_SESSION)
     throw new Error("Subagent requires a parent running inside Rex (REX_SESSION is not set)");
@@ -177,9 +183,17 @@ export async function reconcile(run: RunRecord): Promise<void> {
 
 /** Claim before signalling. A result winner may be closed, but never rewritten. */
 export async function cancel(run: RunRecord): Promise<"result" | "taken_over" | "cancelled"> {
-  const winner = await withRunLock(run.paths.lock, async () => {
-    const existing = await readClaim(run.paths.claim);
-    return existing ?? claim(run.paths.claim, "cancelled");
+  const winner = await withAdmissionLock(async () => {
+    const winner = await withRunLock(
+      run.paths.lock,
+      async () => {
+        const existing = await readClaim(run.paths.claim);
+        return existing ?? claim(run.paths.claim, "cancelled");
+      },
+      true,
+    );
+    await removeTicket(run.id);
+    return winner;
   });
   if (winner === "taken_over") return winner;
   await reconcile(run);
@@ -288,8 +302,8 @@ export async function runForeground(
   progress: Progress,
 ): Promise<{ run: RunRecord; result?: ResultFile }> {
   progress(run);
-  await admit(run);
-  if (signal?.aborted) {
+  const admitted = await admit(run, signal, progress);
+  if (!admitted || signal?.aborted) {
     await cancel(run);
     transition(run, "cancelled");
     run.process = { state: "exited", code: null };
@@ -341,6 +355,10 @@ export async function runForeground(
   }
   await writeRun(run);
   events.watch(run.rex.blockId);
+  if ((await readClaim(run.paths.claim)) === "cancelled") {
+    const location = await locate(run.rex.blockId, run.rex);
+    if (location) await closeBlock(location);
+  }
   events.start();
   const pushed: BlockEvent[] = [];
   const listener = (event: BlockEvent) => {

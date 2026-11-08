@@ -1,10 +1,9 @@
-import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { link, mkdir, open, readFile, rm, unlink } from "node:fs/promises";
+import { link, open, readFile, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
-import { Type } from "typebox";
-import { atomicWrite, isMissing, parse, readJson, syncDirectory } from "./records.ts";
+import { isMissing, privateDirectory, stateDir, syncDirectory } from "./records.ts";
+import { recoverStaleLock, withLock } from "./locks.ts";
+export { processStart } from "./locks.ts";
 
 export type Claim = "result" | "taken_over" | "cancelled";
 export async function readClaim(path: string): Promise<Claim | null> {
@@ -44,82 +43,19 @@ export async function claim(path: string, winner: Claim): Promise<Claim> {
     });
   }
 }
-
-const Holder = Type.Object(
-  {
-    pid: Type.Integer({ minimum: 1 }),
-    startTime: Type.String({ minLength: 1 }),
-    token: Type.String({ minLength: 1 }),
-  },
-  { additionalProperties: false },
-);
-export function processStart(pid: number): string | null {
-  try {
-    return (
-      execFileSync("ps", ["-p", String(pid), "-o", "lstart="], {
-        encoding: "utf8",
-        timeout: 2000,
-      }).trim() || null
-    );
-  } catch (error) {
-    if (error instanceof Error && "status" in error && error.status === 1) return null;
-    throw error;
-  }
+export async function withAdmissionLock<T>(body: () => Promise<T>): Promise<T> {
+  await privateDirectory(stateDir());
+  const path = join(stateDir(), "lock");
+  return withLock(path, body, () => recoverStaleLock(path));
 }
-export async function withRunLock<T>(path: string, body: () => Promise<T>): Promise<T> {
-  const deadline = Date.now() + 10_000;
-  while (true) {
-    try {
-      await mkdir(path, { mode: 0o700 });
-      break;
-    } catch (error) {
-      if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
-      if (Date.now() >= deadline)
-        throw new Error(`Run lock busy; stale recovery requires admission lock: ${path}`);
-      await delay(25);
-    }
-  }
-  try {
-    const startTime = processStart(process.pid);
-    if (!startTime) throw new Error("Cannot identify run lock holder");
-    await atomicWrite(join(path, "holder.json"), {
-      pid: process.pid,
-      startTime,
-      token: randomBytes(16).toString("hex"),
-    });
-    return await body();
-  } finally {
-    await rm(path, { recursive: true });
-  }
+export async function withRunLock<T>(
+  path: string,
+  body: () => Promise<T>,
+  admissionHeld = false,
+): Promise<T> {
+  return withLock(path, body, () =>
+    admissionHeld ? recoverStaleRunLock(path) : withAdmissionLock(() => recoverStaleRunLock(path)),
+  );
 }
-
-/** Caller must hold the admission lock. Never infer death from age or a failed ps call. */
-export async function recoverStaleRunLock(path: string): Promise<boolean> {
-  try {
-    let holder;
-    try {
-      holder = parse(Holder, await readJson(join(path, "holder.json")));
-    } catch (error) {
-      if (!isMissing(error)) throw error;
-      // A suspended initializer is indistinguishable from a crash before metadata. Fail closed.
-      return false;
-    }
-    if (holder) {
-      const start = processStart(holder.pid);
-      if (start === holder.startTime) return false;
-      if (start === null) {
-        try {
-          process.kill(holder.pid, 0);
-          return false;
-        } catch (error) {
-          if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error;
-        }
-      }
-    }
-    await rm(path, { recursive: true });
-    return true;
-  } catch (error) {
-    if (isMissing(error)) return false;
-    throw error;
-  }
-}
+/** Caller holds the admission lock. A live or unidentified holder is retained, regardless of age. */
+export const recoverStaleRunLock = recoverStaleLock;
