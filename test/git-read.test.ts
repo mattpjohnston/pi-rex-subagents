@@ -91,13 +91,17 @@ it("refuses dangerous flags and unique prefixes before git runs", () => {
     "--outp=x",
     "--open-f",
     "--show-s",
-    "--text",
+    "--textc",
     "-c",
     "-ckey=value",
     "-O",
     "-Ofile",
+    "-iO/tmp/x",
+    "-nOcat",
   ])
     expect(refusedGitArgument(arg), arg).toBeTruthy();
+  expect(refusedGitArgument("--text")).toBeNull();
+  expect(refusedGitArgument("-in")).toBeNull();
   expect(refusedGitArgument("--exclude-standard")).toBeNull();
   expect(refusedGitArgument("--cached")).toBeNull();
   expect(refusedGitArgument("--no-textconv")).toBeNull();
@@ -122,6 +126,16 @@ it("refuses a prefix that real git accepts, and does not create its output file"
   await rm(output);
   await expect(runGitRead(root, ["diff", `--output=${output}`])).rejects.toThrow(/output/);
   await expect(readFile(output, "utf8")).rejects.toThrow(/ENOENT/);
+});
+
+it("refuses -O inside a bundle of short options, which real git runs as a pager", async () => {
+  const root = await repo();
+  const { script, marker } = await markerScript(root, "bundled-pager");
+  execFileSync("git", ["-C", root, "grep", `-iO${script}`, "hi"], { encoding: "utf8" });
+  expect(await readFile(marker, "utf8")).toBe("ran\n");
+  await rm(marker);
+  await expect(runGitRead(root, ["grep", `-iO${script}`, "hi"])).rejects.toThrow(/-O/);
+  await expect(readFile(marker, "utf8")).rejects.toThrow(/ENOENT/);
 });
 
 it("does not run a clean filter, smudge filter, diff driver, external diff, fsmonitor, or hook", async () => {
@@ -231,4 +245,30 @@ it("does not run gpg.program for log or show when the repo enables showSignature
     /show-signature/,
   );
   await expect(readFile(marker, "utf8")).rejects.toThrow(/ENOENT/);
+});
+
+it("does not lazily fetch a missing object through a promisor remote set in repo config", async () => {
+  const root = await repo();
+  const marker = join(root, "lazy-fetch.marker");
+  const blob = execFileSync("git", ["-C", root, "rev-parse", "HEAD:f"], {
+    encoding: "utf8",
+  }).trim();
+  await rm(join(root, ".git", "objects", blob.slice(0, 2), blob.slice(2)));
+  for (const [key, value] of [
+    ["core.repositoryformatversion", "1"],
+    ["extensions.partialClone", "origin"],
+    ["remote.origin.url", `ext::sh -c touch% ${marker}`],
+    ["remote.origin.promisor", "true"],
+    ["protocol.ext.allow", "always"],
+  ] as const)
+    execFileSync("git", ["-C", root, "config", key, value]);
+  try {
+    execFileSync("git", ["-C", root, "show", "HEAD:f"], { stdio: "ignore" });
+  } catch {
+    // The fetch fails after the planted command has run.
+  }
+  await lstat(marker);
+  await rm(marker);
+  await runGitRead(root, ["show", "HEAD:f"]);
+  await expect(lstat(marker)).rejects.toThrow(/ENOENT/);
 });

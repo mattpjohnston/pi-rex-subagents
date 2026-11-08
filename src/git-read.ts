@@ -44,13 +44,21 @@ const REFUSED_LONG = [
   "textconv",
   "upload-pack",
 ];
+const EXACT_OPTIONS = ["text"];
 
 export function refusedGitArgument(arg: string): string | null {
-  if (arg === "-c" || (arg.startsWith("-c") && !arg.startsWith("--"))) return "-c";
-  if (arg === "-O" || (arg.startsWith("-O") && !arg.startsWith("--"))) return "-O";
-  if (!arg.startsWith("--") || arg === "--") return null;
+  if (arg.startsWith("-") && !arg.startsWith("--")) {
+    if (arg.startsWith("-c")) return "-c";
+    // Git bundles short options, so `grep -iO<cmd>` runs <cmd> as a pager. An attached value
+    // that contains O is refused too; pass such a value as its own argument.
+    if (arg.includes("O")) return "-O";
+    return null;
+  }
+  if (arg === "--") return null;
   const name = arg.slice(2).split("=", 1)[0] ?? "";
   if (!name) return null;
+  // An exact option name wins over abbreviation in Git, so these are not refused prefixes.
+  if (EXACT_OPTIONS.includes(name)) return null;
   // Git treats a unique prefix as the option, with or without =value.
   const hit = REFUSED_LONG.find((refused) => refused.startsWith(name));
   return hit ? `--${hit}` : null;
@@ -94,6 +102,10 @@ export function gitReadEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.Proces
   env.GIT_PAGER = "cat";
   env.PAGER = "cat";
   env.GIT_TERMINAL_PROMPT = "0";
+  // A promisor remote in repo config would otherwise fetch missing objects through any
+  // transport, including ext:: commands. No read needs the network.
+  env.GIT_NO_LAZY_FETCH = "1";
+  env.GIT_ALLOW_PROTOCOL = "none";
   return env;
 }
 
@@ -145,7 +157,13 @@ async function emptyTreeId(cwd: string): Promise<string> {
   const key = dir.code === 0 ? dir.stdout.trim() : cwd;
   const cached = emptyTrees.get(key);
   if (cached) return cached;
-  const hashed = await bootstrapGit(cwd, ["hash-object", "-t", "tree", "/dev/null"]);
+  const hashed = await bootstrapGit(cwd, [
+    "hash-object",
+    "--no-filters",
+    "-t",
+    "tree",
+    "/dev/null",
+  ]);
   if (hashed.code !== 0) throw new Error(hashed.stderr.trim() || "Cannot hash the empty tree");
   const id = hashed.stdout.trim();
   emptyTrees.set(key, id);
