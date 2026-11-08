@@ -64,11 +64,13 @@ test("Rex wrapper fails on a missing executable rather than calling it gone", as
   await expect(new Rex().listSessions()).rejects.toThrow();
 });
 
-test("parent argv isolates state and sessions, loads both extensions, and forwards only harness paths", async () => {
+test("parent argv isolates state and sessions and forwards only harness paths and explicit executable configuration", async () => {
   const dir = await mkdtemp(join(tmpdir(), "harness-test-"));
   scratch.push(dir);
   vi.stubEnv("PI_SUBAGENTS_PI", process.execPath);
   vi.stubEnv("HARNESS_MODEL", "provider/test-model");
+  vi.stubEnv("PI_SUBAGENTS_REX", undefined);
+  vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
   const run = {
     scratch: dir,
     state: join(dir, "state"),
@@ -85,6 +87,7 @@ test("parent argv isolates state and sessions, loads both extensions, and forwar
     "/usr/bin/env",
     `PI_SUBAGENTS_STATE_DIR=${run.state}`,
     `HARNESS_TOOL_LOG=${join(run.out, "parent-tools.jsonl")}`,
+    `PI_SUBAGENTS_PI=${process.execPath}`,
     process.execPath,
     "--no-extensions",
     "-e",

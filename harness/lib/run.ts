@@ -11,6 +11,7 @@ export const repo = fileURLToPath(new URL("../../", import.meta.url));
 async function guardHashes(): Promise<Record<string, string | null>> {
   const paths = new Set([
     join(homedir(), ".pi", "agent", "settings.json"),
+    join(homedir(), ".pi", "agent", "trust.json"),
     join(homedir(), ".pi", "agent", "extensions", "subagent.ts"),
     ...(process.env.HARNESS_GUARD_FILES ?? "")
       .split(":")

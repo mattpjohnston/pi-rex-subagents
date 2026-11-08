@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { mkdir, open, readFile, readdir, rename, stat, unlink } from "node:fs/promises";
+import { chmod, mkdir, open, readFile, readdir, rename, stat, unlink } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Type, type Static, type TSchema } from "typebox";
@@ -56,7 +56,15 @@ export const ProcessObservation = Type.Union([
 export type ProcessObservation = Static<typeof ProcessObservation>;
 export const Location = Type.Object({ sessionId: text, windowId: text, blockId: text }, object);
 export type Location = Static<typeof Location>;
-export const Waiting = Type.Object({ kind: text, title: text, since: Type.Number() }, object);
+export const Waiting = Type.Object(
+  {
+    source: Type.Union([Type.Literal("reporter"), Type.Literal("rex"), Type.Literal("trust")]),
+    kind: text,
+    title: text,
+    since: Type.Number(),
+  },
+  object,
+);
 export const RunRecord = Type.Object(
   {
     version: Type.Literal(1),
@@ -66,14 +74,7 @@ export const RunRecord = Type.Object(
     cwd: text,
     checkoutRoot: text,
     access: Type.Union([Type.Literal("read"), Type.Literal("inspect"), Type.Literal("write")]),
-    requested: Type.Object(
-      {
-        provider: nullableText,
-        model: nullableText,
-        thinking: Type.Union([Thinking, Type.Null()]),
-      },
-      object,
-    ),
+    requested: Settings,
     effective: Settings,
     background: Type.Boolean(),
     continueFrom: Type.Union([
@@ -84,6 +85,7 @@ export const RunRecord = Type.Object(
     parentRunId: nullableText,
     depth: Type.Integer({ minimum: 0 }),
     rex: Type.Union([Location, Type.Null()]),
+    location: Type.Union([Location, Type.Null()]),
     paths: Type.Object(
       {
         run: text,
@@ -165,6 +167,7 @@ export function runPaths(dir: string): RunRecord["paths"] {
 }
 export async function privateDirectory(path: string): Promise<void> {
   await mkdir(path, { recursive: true, mode: 0o700 });
+  await chmod(path, 0o700);
 }
 export async function syncDirectory(path: string): Promise<void> {
   const dir = await open(path, "r");
@@ -236,5 +239,17 @@ export async function listRuns(): Promise<RunRecord[]> {
     if (isMissing(error)) return [];
     throw error;
   }
-  return Promise.all(ids.filter((id) => /^[a-f0-9]{24}$/.test(id)).map(readRun));
+  const records = await Promise.all(
+    ids
+      .filter((id) => /^[a-f0-9]{24}$/.test(id))
+      .map(async (id) => {
+        try {
+          return await readRun(id);
+        } catch (error) {
+          if (isMissing(error)) return null;
+          throw error;
+        }
+      }),
+  );
+  return records.filter((record) => record !== null);
 }

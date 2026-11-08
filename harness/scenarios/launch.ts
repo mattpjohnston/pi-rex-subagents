@@ -48,10 +48,12 @@ export default async function launch(): Promise<void> {
       assert.equal(`${String(facts.provider)}/${String(facts.model)}`, model);
       assert.equal(facts.programStatusOverride, null);
       assert.equal(facts.thinking, final.effective.thinking);
-      assert.equal(final.requested.thinking, override ? "max" : null);
-      assert.equal(final.requested.provider, override ? model.slice(0, slash) : null);
+      assert.equal(final.requested.thinking, override ? "max" : "low");
+      assert.equal(final.requested.provider, model.slice(0, slash));
       assert.equal(final.effective.provider + "/" + final.effective.model, model);
+      assert(reported.sessionFile);
       assert(reported.sessionFile?.startsWith(final.paths.sessionDir));
+      assert.equal((await stat(reported.sessionFile)).mode & 0o777, 0o600);
       assert.equal((await stat(final.paths.result)).mode & 0o777, 0o600);
       assert.equal((await stat(dirname(final.paths.run))).mode & 0o777, 0o700);
       const logged = await events(final);

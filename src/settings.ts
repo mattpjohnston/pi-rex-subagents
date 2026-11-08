@@ -13,7 +13,7 @@ export function resolveSettings(
   parent: ModelSettings | undefined,
   input: { provider?: string; model?: string; thinking?: ModelThinkingLevel },
   find: (provider: string, id: string) => Model<Api> | undefined,
-): ModelSettings {
+): { requested: ModelSettings; effective: ModelSettings } {
   let provider = input.provider?.trim() ?? parent?.provider ?? "";
   let id = input.model?.trim() ?? parent?.model ?? "";
   if (input.provider !== undefined && !provider) throw new Error("Empty provider override");
@@ -22,18 +22,18 @@ export function resolveSettings(
     const slash = id.indexOf("/");
     const prefix = id.slice(0, slash);
     const suffix = id.slice(slash + 1);
-    if (prefix === provider) id = suffix;
-    else if (!input.provider && !find(provider, id) && find(prefix, suffix)) {
+    // Explicit provider/model wins; inherited slash IDs are never reinterpreted.
+    if (!input.provider) {
       provider = prefix;
       id = suffix;
-    }
+    } else if (prefix === provider) id = suffix;
   }
   const model = find(provider, id);
   if (!model) throw new Error(`Unknown model selection: ${provider}/${id}; no provider fallback`);
+  const requested = { provider, model: id, thinking: input.thinking ?? parent?.thinking ?? "off" };
   return {
-    provider,
-    model: id,
-    thinking: clampThinkingLevel(model, input.thinking ?? parent?.thinking ?? "off"),
+    requested,
+    effective: { ...requested, thinking: clampThinkingLevel(model, requested.thinking) },
   };
 }
 

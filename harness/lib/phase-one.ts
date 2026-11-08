@@ -47,11 +47,13 @@ export async function records(run: Run): Promise<RunRecord[]> {
     if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
     throw error;
   }
-  return Promise.all(
-    ids.map(async (id) =>
-      parse(RunRecord, JSON.parse(await readFile(join(run.state, "runs", id, "run.json"), "utf8"))),
-    ),
+  const records = await Promise.all(
+    ids.map(async (id) => {
+      const raw = await maybeFile(join(run.state, "runs", id, "run.json"));
+      return raw ? parse(RunRecord, JSON.parse(raw)) : null;
+    }),
   );
+  return records.filter((record) => record !== null);
 }
 export async function events(record: RunRecord): Promise<Event[]> {
   const raw = await maybeFile(record.paths.events);

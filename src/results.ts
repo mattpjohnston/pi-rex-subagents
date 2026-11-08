@@ -52,6 +52,7 @@ export function cappedText(text: string): string {
   );
 }
 export function resultText(run: RunRecord, result?: ResultFile): string {
+  const location = run.location ?? run.rex;
   return cappedText(
     [
       `Run: ${run.id} (${run.label})`,
@@ -61,8 +62,8 @@ export function resultText(run: RunRecord, result?: ResultFile): string {
       `Process: ${JSON.stringify(run.process)}`,
       `Result: ${run.paths.result}`,
       `Events: ${run.paths.events}`,
-      run.rex
-        ? `Capture: rex capture -s ${run.rex.sessionId} -b ${run.rex.blockId} --trim --unwrap`
+      location
+        ? `Capture: rex capture -s ${location.sessionId} -b ${location.blockId} --trim --unwrap`
         : "Launch location unknown; do not retry blindly",
       run.diagnostic ?? "",
       result?.reason ?? "",

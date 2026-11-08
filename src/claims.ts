@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { link, mkdir, open, readFile, rm, stat, unlink } from "node:fs/promises";
+import { link, mkdir, open, readFile, rm, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { Type } from "typebox";
@@ -101,8 +101,8 @@ export async function recoverStaleRunLock(path: string): Promise<boolean> {
       holder = parse(Holder, await readJson(join(path, "holder.json")));
     } catch (error) {
       if (!isMissing(error)) throw error;
-      // A crash between mkdir and metadata leaves no PID. Allow the initializer to finish first.
-      if (Date.now() - (await stat(path)).mtimeMs < 10_000) return false;
+      // A suspended initializer is indistinguishable from a crash before metadata. Fail closed.
+      return false;
     }
     if (holder) {
       const start = processStart(holder.pid);

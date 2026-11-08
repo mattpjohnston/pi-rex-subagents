@@ -9,6 +9,7 @@ import {
   listRuns,
   readRun,
   runDirectory,
+  transition,
   writeRun,
   type RunRecord,
 } from "./records.ts";
@@ -96,7 +97,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
           ctx.ui.notify("Label must identify exactly one child with a Rex block", "error");
           return;
         }
-        const location = await locate(matches[0].rex.blockId, matches[0].rex);
+        const location = await locate(
+          matches[0].rex.blockId,
+          matches[0].location ?? matches[0].rex,
+        );
         if (!location) {
           ctx.ui.notify("Child block no longer exists; artifacts are retained", "warning");
           return;
@@ -118,6 +122,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       const selected = all.filter((run) =>
         args === "all" ? live(run) : run.parentSessionId === ctx.sessionManager.getSessionId(),
       );
+      for (const run of selected.slice(0, 30)) {
+        if (run.rex) run.location = await locate(run.rex.blockId, run.location ?? run.rex);
+      }
       const text = cappedText(
         selected
           .slice(0, 30)
@@ -125,7 +132,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
             [
               statusLine(run),
               `Run ${run.id}; checkout ${run.checkoutRoot}; model ${run.effective.provider}/${run.effective.model} (${run.effective.thinking})`,
-              `Rex ${JSON.stringify(run.rex)}; process ${JSON.stringify(run.process)}`,
+              `Rex ${JSON.stringify(run.location)}; process ${JSON.stringify(run.process)}`,
               `Result ${run.paths.result}; events ${run.paths.events}; session ${run.sessionFile ?? run.paths.sessionDir}`,
             ].join("\n"),
           )
@@ -177,6 +184,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         };
       } catch (error) {
         run.diagnostic = errorText(error);
+        if (!isTerminal(run.lifecycle)) transition(run, "failed");
+        if (!run.rex) run.process = { state: "exited", code: null };
         await writeRun(run);
         throw error;
       } finally {

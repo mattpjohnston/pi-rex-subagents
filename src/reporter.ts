@@ -126,6 +126,8 @@ export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
         return;
       }
       log("takeover_claimed");
+      // Testing hook: an extra harness extension can delay UI acknowledgement after the durable claim.
+      pi.events.emit("subagents:test-takeover-claimed", { runId: run.id });
       ctx.ui.notify(
         `Taken over: ${run.label}. Automatic result publication and shutdown are disabled.`,
         "info",

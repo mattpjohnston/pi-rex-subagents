@@ -67,7 +67,7 @@ export async function prepareRun(input: LaunchInput, ctx: ExtensionContext): Pro
   const parent: ModelSettings | undefined = ctx.model
     ? { provider: ctx.model.provider, model: ctx.model.id, thinking: ctx.thinkingLevel ?? "off" }
     : undefined;
-  const effective = resolveSettings(parent, input, (provider, id) =>
+  const settings = resolveSettings(parent, input, (provider, id) =>
     ctx.modelRegistry.find(provider, id),
   );
   const cwd = await workingDirectory(ctx.cwd, input.cwd);
@@ -91,6 +91,7 @@ export async function prepareRun(input: LaunchInput, ctx: ExtensionContext): Pro
   const id = randomBytes(12).toString("hex");
   const paths = runPaths(runDirectory(id));
   await privateDirectory(stateDir());
+  await privateDirectory(dirname(dirname(paths.run)));
   await privateDirectory(dirname(paths.run));
   await privateDirectory(paths.sessionDir);
   await privateDirectory(paths.inbox);
@@ -105,18 +106,15 @@ export async function prepareRun(input: LaunchInput, ctx: ExtensionContext): Pro
     cwd,
     checkoutRoot: root,
     access: "write",
-    requested: {
-      provider: input.provider ?? null,
-      model: input.model ?? null,
-      thinking: input.thinking ?? null,
-    },
-    effective,
+    requested: settings.requested,
+    effective: settings.effective,
     background: false,
     continueFrom,
     parentSessionId: ctx.sessionManager.getSessionId(),
     parentRunId: null,
     depth: 0,
     rex: null,
+    location: null,
     paths,
     lifecycle: "admitting",
     process: { state: "unknown" },
@@ -134,7 +132,13 @@ export async function prepareRun(input: LaunchInput, ctx: ExtensionContext): Pro
 
 export async function childArgv(run: RunRecord, entry: string): Promise<string[]> {
   const env = [`PI_SUBAGENTS_RUN_DIR=${dirname(run.paths.run)}`, `PI_SUBAGENTS_RUN_ID=${run.id}`];
-  for (const key of ["PI_SUBAGENTS_STATE_DIR", "PI_SUBAGENTS_LOG_TOOLS", "PI_CODING_AGENT_DIR"]) {
+  for (const key of [
+    "PI_SUBAGENTS_STATE_DIR",
+    "PI_SUBAGENTS_LOG_TOOLS",
+    "PI_SUBAGENTS_PI",
+    "PI_SUBAGENTS_REX",
+    "PI_CODING_AGENT_DIR",
+  ]) {
     if (process.env[key]) env.push(`${key}=${process.env[key]}`);
   }
   const args = [
@@ -163,9 +167,12 @@ export async function childArgv(run: RunRecord, entry: string): Promise<string[]
 
 export async function reconcile(run: RunRecord): Promise<void> {
   if (!run.rex) return;
-  const observation = await observeProcess(run.rex);
-  if (observation.location) run.rex = observation.location;
-  run.process = observation.process;
+  const observation = await observeProcess(run.location ?? run.rex);
+  run.location = observation.location;
+  run.process =
+    run.process.state === "unresolved" && observation.process.state === "live"
+      ? { state: "unresolved", pid: observation.process.pid }
+      : observation.process;
 }
 
 /** Claim before signalling. A result winner may be closed, but never rewritten. */
@@ -176,7 +183,7 @@ export async function cancel(run: RunRecord): Promise<"result" | "taken_over" | 
   });
   if (winner === "taken_over") return winner;
   await reconcile(run);
-  if (run.process.state === "live" && run.process.pid) {
+  if ((run.process.state === "live" || run.process.state === "unresolved") && run.process.pid) {
     try {
       process.kill(run.process.pid, "SIGTERM");
     } catch (error) {
@@ -216,7 +223,12 @@ class EventCursor {
               changed = true;
               break;
             case "project_trust":
-              run.waiting = { kind: "project_trust", title: "Project trust", since: event.at };
+              run.waiting = {
+                source: "trust",
+                kind: "project_trust",
+                title: "Project trust",
+                since: event.at,
+              };
               changed = true;
               break;
             case "session_start":
@@ -229,6 +241,7 @@ class EventCursor {
               break;
             case "ui_prompt_start":
               run.waiting = {
+                source: "reporter",
                 kind: String(event.data.kind),
                 title: String(event.data.title),
                 since: event.at,
@@ -250,6 +263,23 @@ class EventCursor {
   }
 }
 
+export function observeRexEvent(run: RunRecord, event: BlockEvent): void {
+  const payload = object(event.payload);
+  if (event.name === "child_exited" && typeof payload.exit_code === "number") {
+    run.process = { state: "exited", code: payload.exit_code };
+  } else if (event.name === "program_status_changed") {
+    const status = payload.record ? object(payload.record) : null;
+    if (status?.state === "blocked")
+      run.waiting ??= {
+        source: "rex",
+        kind: typeof status.kind === "string" ? status.kind : "blocked",
+        title: typeof status.msg === "string" ? status.msg : "Pi dialog",
+        since: Date.now(),
+      };
+    else if (run.waiting?.source === "rex") run.waiting = null;
+  }
+}
+
 export async function runForeground(
   run: RunRecord,
   entry: string,
@@ -262,6 +292,7 @@ export async function runForeground(
   if (signal?.aborted) {
     await cancel(run);
     transition(run, "cancelled");
+    run.process = { state: "exited", code: null };
     await writeRun(run);
     return { run };
   }
@@ -301,6 +332,7 @@ export async function runForeground(
       windowId: reply.window_id,
       blockId: reply.block_ids[0],
     };
+    run.location = { ...run.rex };
   } catch (error) {
     run.diagnostic = `Uncertain Rex launch: ${errorText(error)}. Not retried.`;
     transition(run, "failed");
@@ -329,21 +361,8 @@ export async function runForeground(
     while (true) {
       let changed = await cursor.drain(run);
       for (const event of pushed.splice(0)) {
-        const payload = object(event.payload);
-        if (event.name === "child_exited" && typeof payload.exit_code === "number") {
-          run.process = { state: "exited", code: payload.exit_code };
-          changed = true;
-        } else if (event.name === "program_status_changed") {
-          const status = payload.record ? object(payload.record) : null;
-          if (status?.state === "blocked")
-            run.waiting ??= {
-              kind: typeof status.kind === "string" ? status.kind : "blocked",
-              title: typeof status.msg === "string" ? status.msg : "Pi dialog",
-              since: Date.now(),
-            };
-          else if (run.waiting?.kind === "blocked") run.waiting = null;
-          changed = true;
-        }
+        observeRexEvent(run, event);
+        changed = true;
       }
       if (Date.now() - lastReconcile >= (events.connected ? 5000 : 1000)) {
         await reconcile(run);

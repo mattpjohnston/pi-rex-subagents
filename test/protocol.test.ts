@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { claim, processStart, readClaim, recoverStaleRunLock, withRunLock } from "../src/claims.ts";
-import { parse, ResultFile, RunRecord } from "../src/records.ts";
+import { listRuns, parse, ResultFile, RunRecord } from "../src/records.ts";
 import { cappedText, deriveOutcome } from "../src/results.ts";
 import { resolveSettings } from "../src/settings.ts";
 import { getModel } from "@earendil-works/pi-ai/compat";
@@ -48,7 +48,17 @@ describe("claim protocol", () => {
   });
   it("a crash before link leaves no empty winning claim", async () => {
     await scratch(async (dir) => {
-      await writeFile(join(dir, "claim.crashed.tmp"), "", { mode: 0o600 });
+      const temporary = join(dir, "claim.crashed.tmp");
+      const child = spawn(process.execPath, [
+        "--input-type=module",
+        "-e",
+        `import {openSync,fsyncSync} from 'node:fs'; const fd=openSync(${JSON.stringify(temporary)},'wx',0o600); fsyncSync(fd); process.kill(process.pid,'SIGKILL');`,
+      ]);
+      const signal = await new Promise<NodeJS.Signals | null>((resolve, reject) => {
+        child.once("error", reject);
+        child.once("exit", (_code, signal) => resolve(signal));
+      });
+      expect(signal).toBe("SIGKILL");
       expect(await readClaim(join(dir, "claim"))).toBeNull();
       expect(await claim(join(dir, "claim"), "taken_over")).toBe("taken_over");
       expect(await readFile(join(dir, "claim"), "utf8")).toBe("taken_over");
@@ -63,6 +73,29 @@ describe("claim protocol", () => {
   });
 });
 describe("run lock", () => {
+  it("recovers metadata belonging to a confirmed dead process", async () => {
+    await scratch(async (dir) => {
+      const lock = join(dir, "lock");
+      const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"]);
+      await new Promise<void>((resolve, reject) => {
+        child.once("spawn", resolve);
+        child.once("error", reject);
+      });
+      if (!child.pid) throw new Error("No child PID");
+      const startTime = processStart(child.pid);
+      await mkdir(lock);
+      await writeFile(
+        join(lock, "holder.json"),
+        JSON.stringify({ pid: child.pid, startTime, token: "crashed" }),
+      );
+      const exited = new Promise<void>((resolve) => {
+        child.once("exit", () => resolve());
+      });
+      child.kill("SIGKILL");
+      await exited;
+      expect(await recoverStaleRunLock(lock)).toBe(true);
+    });
+  });
   it("serializes contenders and releases on failure", async () => {
     await scratch(async (dir) => {
       const lock = join(dir, "lock");
@@ -88,7 +121,7 @@ describe("run lock", () => {
       await expect(stat(lock)).rejects.toMatchObject({ code: "ENOENT" });
     });
   });
-  it("keeps live holders and recovers dead/reused PIDs and crashed initialization", async () => {
+  it("keeps live or unidentified holders and recovers a reused PID", async () => {
     await scratch(async (dir) => {
       const lock = join(dir, "lock");
       await withRunLock(lock, async () => {
@@ -103,12 +136,27 @@ describe("run lock", () => {
       await mkdir(lock);
       expect(await recoverStaleRunLock(lock)).toBe(false);
       await utimes(lock, 1, 1);
-      expect(await recoverStaleRunLock(lock)).toBe(true);
+      expect(await recoverStaleRunLock(lock)).toBe(false);
       expect(processStart(process.pid)).toBeTruthy();
     });
   });
 });
 describe("boundary parsing and outcomes", () => {
+  it("lists safely while another parent initializes a run directory", async () => {
+    await scratch(async (dir) => {
+      const previous = process.env.PI_SUBAGENTS_STATE_DIR;
+      process.env.PI_SUBAGENTS_STATE_DIR = dir;
+      try {
+        await mkdir(join(dir, "runs", "a".repeat(24)), { recursive: true });
+        expect(await listRuns()).toEqual([]);
+        await writeFile(join(dir, "runs", "a".repeat(24), "run.json"), "{}");
+        await expect(listRuns()).rejects.toThrow("Invalid persisted");
+      } finally {
+        if (previous === undefined) delete process.env.PI_SUBAGENTS_STATE_DIR;
+        else process.env.PI_SUBAGENTS_STATE_DIR = previous;
+      }
+    });
+  });
   it("rejects partial records and results, extra ownership and invalid states", () => {
     expect(() => parse(RunRecord, {})).toThrow();
     expect(() => parse(ResultFile, { runId: "stale", outcome: "completed" })).toThrow();
@@ -150,15 +198,31 @@ describe("model resolution", () => {
     thinking: "low" as const,
   };
   it("inherits slash-containing IDs and resolves bare and qualified overrides", () => {
-    expect(resolveSettings(parent, {}, find).model).toBe(parent.model);
-    expect(resolveSettings(parent, { model: parent.model }, find).provider).toBe("openrouter");
-    expect(resolveSettings(parent, { model: `openrouter/${parent.model}` }, find).model).toBe(
-      parent.model,
+    expect(resolveSettings(parent, {}, find).effective.model).toBe(parent.model);
+    expect(resolveSettings(parent, {}, find).requested).toEqual(parent);
+    expect(
+      resolveSettings(parent, { provider: "openrouter", model: parent.model }, find).effective
+        .provider,
+    ).toBe("openrouter");
+    expect(() => resolveSettings(parent, { model: parent.model }, find)).toThrow(
+      "no provider fallback",
     );
     expect(
+      resolveSettings(parent, { model: `openrouter/${parent.model}` }, find).effective.model,
+    ).toBe(parent.model);
+    expect(
       resolveSettings(parent, { provider: "openai", model: "gpt-4o", thinking: "max" }, find)
-        .thinking,
+        .effective.thinking,
     ).toBe("off");
+  });
+  it("treats an explicitly provider-qualified model as that provider, even when a slash ID exists on the parent provider", () => {
+    const ambiguous = (provider: string, id: string) =>
+      provider === "openrouter" && id === "openai/gpt-4o"
+        ? getModel("openrouter", "openai/gpt-4o")
+        : find(provider, id);
+    expect(resolveSettings(parent, { model: "openai/gpt-4o" }, ambiguous).effective.provider).toBe(
+      "openai",
+    );
   });
   it("refuses invalid selections rather than falling back", () => {
     expect(() => resolveSettings(parent, { provider: "missing" }, find)).toThrow(
