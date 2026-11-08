@@ -200,7 +200,8 @@ export async function admit(
   run: RunRecord,
   signal?: AbortSignal,
   progress: (run: RunRecord) => void = () => {},
-): Promise<boolean> {
+  pause?: AbortSignal,
+): Promise<boolean | "paused"> {
   await withAdmissionLock(async () => {
     await readLimits();
     await privateDirectory(join(stateDir(), "queue"));
@@ -237,6 +238,7 @@ export async function admit(
           }
           return { outcome: "cancelled" as const, members: 0, checked: 0 };
         }
+        if (pause?.aborted) return { outcome: "paused" as const, members: 0, checked: 0 };
         const { snapshot, reservations, checked } = await pass(limits);
         const members = reservations.reduce(
           (count, reservation) => count + reservation.members.length,
@@ -271,6 +273,7 @@ export async function admit(
       };
     });
     await notePass(measured);
+    if (measured.outcome === "paused") return "paused";
     if (measured.outcome !== "waiting") return measured.outcome === "admitted";
     await delay(200);
   }

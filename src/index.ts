@@ -1,6 +1,7 @@
 import { realpath } from "node:fs/promises";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   isToolCallEventType,
   type ExtensionAPI,
@@ -9,6 +10,23 @@ import {
 import { contains } from "./admission-core.ts";
 import { writerOnPath } from "./admission.ts";
 import { canonicalTarget, checkoutRoot } from "./checkout.ts";
+import { readClaim, type Claim } from "./claims.ts";
+import {
+  DELIVERY_NOTE,
+  NOTE_TYPE,
+  RESULTS_TYPE,
+  blocksReplacement,
+  coalesceDelay,
+  deliveredRunIds,
+  endsWithUnansweredDelivery,
+  nextDelivery,
+  packDelivery,
+  shouldAppend,
+  shouldCancel,
+  transitionView,
+  type DeliveryOutcome,
+} from "./delivery.ts";
+import { claimRuntime } from "./load-guard.ts";
 import { workingDirectory } from "./settings.ts";
 import { clearEligible, dismiss } from "./terminals.ts";
 import { registerReporter } from "./reporter.ts";
@@ -17,13 +35,23 @@ import {
   isTerminal,
   listRuns,
   parse,
+  readResult,
   readRun,
   runDirectory,
   transition,
   writeRun,
+  type ResultFile,
   type RunRecord,
 } from "./records.ts";
-import { LaunchInput, cancel, prepareRun, reconcile, runForeground } from "./launch.ts";
+import {
+  CANCELLATION_MS,
+  LaunchInput,
+  cancel,
+  prepareRun,
+  reconcile,
+  runForeground,
+  startBackground,
+} from "./launch.ts";
 import { RexEvents, locate, rexJson } from "./rex.ts";
 import { cappedText, resultText } from "./results.ts";
 
@@ -73,6 +101,7 @@ async function sameMessageWriter(
   return null;
 }
 export default async function (pi: ExtensionAPI): Promise<void> {
+  if (!claimRuntime(pi.events)) return;
   const childId = process.env.PI_SUBAGENTS_RUN_ID;
   if (childId || process.env.PI_SUBAGENTS_RUN_DIR) {
     if (
@@ -89,6 +118,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   }
   const events = new RexEvents();
   const active = new Map<string, RunRecord>();
+  const watches = new Map<string, AbortController>();
+  const handed = new Set<string>();
+  const inflight = new Set<string>();
   const prepared = new Map<string, RunRecord>();
   // The runner swallows a start-handler error, so record the checkout before prepareRun can throw.
   // A rejected launch in this message must still refuse a sibling edit or write.
@@ -117,6 +149,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     if (!run) return;
     prepared.delete(event.toolCallId);
     active.delete(run.id);
+    // A handed-off background run stays admitting while queued. The watcher owns it.
+    if (handed.delete(event.toolCallId)) return;
     // A blocked or aborted preflight never executes the launch tool.
     if (run.lifecycle === "admitting") {
       await cancel(run);
@@ -154,14 +188,197 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   let widget: ReturnType<typeof setInterval> | undefined;
   let refreshing = false;
   let context: ExtensionContext | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   const notices = new Map<string, string>();
+  const sessionRuns = async (ctx: ExtensionContext) =>
+    (await listRuns()).filter((run) => run.parentSessionId === ctx.sessionManager.getSessionId());
+  const outcomeOf = async (run: RunRecord, claim: Claim | null): Promise<DeliveryOutcome> => {
+    let result: ResultFile | undefined;
+    if (claim === "result") {
+      try {
+        result = await readResult(run);
+      } catch (error) {
+        if (!(error instanceof Error)) throw error;
+      }
+    }
+    return {
+      runId: run.id,
+      outcome: claim === "taken_over" ? "taken_over" : (result?.outcome ?? run.lifecycle),
+      text: resultText(run, result, result?.checkout),
+      sessionPath: result?.sessionFile ?? run.sessionFile ?? run.paths.sessionDir,
+      resultPath: run.paths.result,
+      ...(result?.checkout ? { checkout: result.checkout } : {}),
+    };
+  };
+  const views = async (ctx: ExtensionContext) => {
+    const delivered = deliveredRunIds(ctx.sessionManager.getBranch());
+    return Promise.all(
+      (await sessionRuns(ctx)).map(async (run) =>
+        transitionView(run, await readClaim(run.paths.claim), delivered),
+      ),
+    );
+  };
+  const clearTimer = () => {
+    clearTimeout(timer);
+    timer = undefined;
+  };
+  const deliver = async (
+    ctx: ExtensionContext,
+    source: "settled" | "timer" | "reconcile" | "append",
+  ) => {
+    const branch = ctx.sessionManager.getBranch();
+    const delivered = deliveredRunIds(branch);
+    for (const id of inflight) if (delivered.has(id)) inflight.delete(id);
+    const pending = [];
+    for (const run of await sessionRuns(ctx)) {
+      const claim = await readClaim(run.paths.claim);
+      const view = transitionView(run, claim, delivered);
+      if (!shouldAppend(view, ctx.sessionManager.getSessionId()) || inflight.has(run.id)) continue;
+      pending.push(await outcomeOf(run, claim));
+    }
+    const idle = ctx.isIdle();
+    const action = nextDelivery({
+      idle,
+      pending: pending.length > 0,
+      unanswered: endsWithUnansweredDelivery(branch),
+      source,
+    });
+    if (action === "wait" || action === "none") return;
+    clearTimer();
+    if (action === "note") {
+      pi.sendMessage(
+        { customType: NOTE_TYPE, content: DELIVERY_NOTE, display: true },
+        { triggerTurn: true, deliverAs: "followUp" },
+      );
+      return;
+    }
+    const packed = packDelivery(pending);
+    if (!packed.runIds.length) return;
+    for (const id of packed.runIds) inflight.add(id);
+    pi.sendMessage(
+      {
+        customType: RESULTS_TYPE,
+        content: packed.content,
+        display: true,
+        details: { runIds: packed.runIds },
+      },
+      { triggerTurn: source !== "append" && idle, deliverAs: "followUp" },
+    );
+  };
+  const noteFinished = () => {
+    if (!context || timer) return;
+    if (
+      nextDelivery({
+        idle: context.isIdle(),
+        pending: true,
+        unanswered: false,
+        source: "finished",
+      }) !== "wait"
+    )
+      return;
+    timer = setTimeout(() => {
+      timer = undefined;
+      if (context) void deliver(context, "timer");
+    }, coalesceDelay());
+  };
+  const detachWatches = () => {
+    for (const detach of watches.values()) detach.abort();
+    watches.clear();
+  };
+  const follow = (
+    run: RunRecord,
+    signal?: AbortSignal,
+    resume = false,
+    progress: (run: RunRecord) => void = () => {},
+  ) => {
+    const detach = new AbortController();
+    const linked = new AbortController();
+    const onAbort = () => linked.abort();
+    if (signal) {
+      if (signal.aborted) linked.abort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    }
+    const started = startBackground(
+      run,
+      entry,
+      events,
+      signal ? linked.signal : undefined,
+      progress,
+      {
+        detach: detach.signal,
+        resume,
+      },
+    );
+    watches.set(run.id, detach);
+    void started.done.then(
+      () => {
+        watches.delete(run.id);
+        signal?.removeEventListener("abort", onAbort);
+        if (!detach.signal.aborted) noteFinished();
+      },
+      (error: unknown) => {
+        watches.delete(run.id);
+        void readRun(run.id)
+          .then(async (current) => {
+            current.diagnostic = errorText(error);
+            if (!isTerminal(current.lifecycle)) transition(current, "failed");
+            await writeRun(current);
+          })
+          .catch(() => undefined);
+      },
+    );
+    return {
+      ready: started.ready,
+      detach,
+      release: () => signal?.removeEventListener("abort", onAbort),
+    };
+  };
+  const cancelOwned = async (sessionId: string) => {
+    for (const run of await listRuns()) {
+      const claim = await readClaim(run.paths.claim);
+      if (shouldCancel(transitionView(run, claim, new Set()), sessionId)) await cancel(run);
+    }
+    const deadline = Date.now() + CANCELLATION_MS;
+    while (Date.now() < deadline) {
+      let waiting = false;
+      for (const run of await listRuns()) {
+        if (run.parentSessionId !== sessionId || !run.background || isTerminal(run.lifecycle))
+          continue;
+        if ((await readClaim(run.paths.claim)) === "taken_over") continue;
+        if (run.process.state === "live" || run.process.state === "unknown" || run.queue !== null) {
+          waiting = true;
+          break;
+        }
+      }
+      if (!waiting) break;
+      await delay(200);
+    }
+    for (const run of await listRuns()) {
+      if (run.parentSessionId !== sessionId || run.process.state !== "live") continue;
+      if ((await readClaim(run.paths.claim)) === "taken_over") continue;
+      const fresh = await readRun(run.id);
+      if (fresh.process.state !== "live") continue;
+      fresh.process = { state: "unresolved", pid: fresh.process.pid };
+      if (!isTerminal(fresh.lifecycle)) transition(fresh, "cancelled");
+      await writeRun(fresh);
+    }
+  };
+  const confirmReplacement = async (ctx: ExtensionContext, kind: string) => {
+    if (!blocksReplacement(await views(ctx), ctx.sessionManager.getSessionId())) return;
+    const confirmed = await ctx.ui.confirm(
+      "Cancel background subagents?",
+      `This session has live, queued, or undelivered subagent work. ${kind} cancels parent-owned children and appends their outcomes here. A taken-over child keeps running.`,
+    );
+    if (!confirmed) return { cancel: true as const };
+    await cancelOwned(ctx.sessionManager.getSessionId());
+    await deliver(ctx, "append");
+    return;
+  };
   const refresh = async (ctx: ExtensionContext) => {
     if (refreshing) return;
     refreshing = true;
     try {
-      const runs = (await listRuns()).filter(
-        (run) => run.parentSessionId === ctx.sessionManager.getSessionId(),
-      );
+      const runs = await sessionRuns(ctx);
       for (const run of runs) {
         if (isTerminal(run.lifecycle) && run.process.state !== "exited" && run.rex) {
           await reconcile(run);
@@ -172,29 +389,62 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       const clearable = (await Promise.all(runs.map(clearEligible))).filter(Boolean).length;
       if (clearable)
         lines.push(`${clearable} exited completed child terminal(s): /subagents clear`);
+      const pending = (await views(ctx)).filter((run) =>
+        shouldAppend(run, ctx.sessionManager.getSessionId()),
+      ).length;
+      if (pending) lines.push(`${pending} background result(s) pending delivery`);
       ctx.ui.setWidget("subagents", lines.length ? lines : undefined);
+      if (ctx.isIdle() && pending) noteFinished();
     } catch (error) {
       ctx.ui.setStatus("subagents", `Subagent records: ${errorText(error)}`);
     } finally {
       refreshing = false;
     }
   };
-  pi.on("session_start", (_event, ctx) => {
+  pi.on("session_start", async (event, ctx) => {
     context = ctx;
     widget = setInterval(() => {
       void refresh(ctx);
     }, 2000);
+    if (event.reason === "reload") {
+      for (const run of await sessionRuns(ctx)) {
+        if (!run.background || (await readClaim(run.paths.claim)) === "taken_over") continue;
+        if (
+          isTerminal(run.lifecycle) &&
+          (run.process.state === "exited" || run.process.state === "unresolved")
+        )
+          continue;
+        follow(run, undefined, true);
+      }
+    }
     void refresh(ctx);
+    await deliver(ctx, "reconcile");
   });
-  pi.on("session_shutdown", async () => {
+  pi.on("session_tree", async (_event, ctx) => {
+    context = ctx;
+    if (ctx.isIdle()) await deliver(ctx, "reconcile");
+  });
+  pi.on("agent_settled", async (_event, ctx) => {
+    context = ctx;
+    await deliver(ctx, "settled");
+  });
+  pi.on("session_before_switch", async (event, ctx) => confirmReplacement(ctx, event.reason));
+  pi.on("session_before_fork", async (_event, ctx) => confirmReplacement(ctx, "fork"));
+  pi.on("session_shutdown", async (event, ctx) => {
     clearInterval(widget);
-    for (const run of active.values()) await cancel(run);
+    clearTimer();
+    if (event.reason !== "reload") {
+      for (const run of active.values()) if (!run.background) await cancel(run);
+      if (event.reason === "quit") await cancelOwned(ctx.sessionManager.getSessionId());
+      await deliver(ctx, "append");
+    }
+    detachWatches();
     events.stop();
     context = undefined;
   });
   pi.registerCommand("subagents", {
     description:
-      "List this parent's runs; all lists every live child; go <label> selects its current Rex tab",
+      "List this parent's runs; all lists every live child; go <label> selects its tab; cancel <label|run-id> cancels a background run",
     handler: async (args, ctx) => {
       const all = (await listRuns()).sort(waitingFirst);
       const owned = all.filter((run) => run.parentSessionId === ctx.sessionManager.getSessionId());
@@ -219,6 +469,36 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         ctx.ui.notify(
           `${selected.length} exited child terminal(s) dismissed; artifacts retained`,
           "info",
+        );
+        await refresh(ctx);
+        return;
+      }
+      if (args.startsWith("cancel ")) {
+        const target = args.slice("cancel ".length).trim();
+        const matches = [];
+        for (const run of owned) {
+          if (run.id !== target && run.label !== target) continue;
+          const claim = await readClaim(run.paths.claim);
+          if (
+            shouldCancel(transitionView(run, claim, new Set()), ctx.sessionManager.getSessionId())
+          )
+            matches.push(run);
+        }
+        if (matches.length !== 1) {
+          ctx.ui.notify(
+            "Cancel requires exactly one queued or running background run of this parent",
+            "error",
+          );
+          return;
+        }
+        const selected = matches[0];
+        if (!selected) return;
+        const winner = await cancel(selected);
+        ctx.ui.notify(
+          winner === "taken_over"
+            ? `${selected.label} is taken over and was left running`
+            : `Cancelled ${selected.label} (${selected.id})`,
+          winner === "taken_over" ? "warning" : "info",
         );
         await refresh(ctx);
         return;
@@ -252,7 +532,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       }
       if (args && args !== "all") {
         ctx.ui.notify(
-          "Usage: /subagents [all | go <label> | clear | dismiss <label|run-id>]",
+          "Usage: /subagents [all | go <label> | cancel <label|run-id> | clear | dismiss <label|run-id>]",
           "error",
         );
         return;
@@ -263,18 +543,26 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       for (const run of selected.slice(0, 30)) {
         if (run.rex) run.location = await locate(run.rex.blockId, run.location ?? run.rex);
       }
+      const pending = (await views(ctx)).filter((run) =>
+        shouldAppend(run, ctx.sessionManager.getSessionId()),
+      ).length;
       const text = cappedText(
-        selected
-          .slice(0, 30)
-          .map((run) =>
-            [
-              statusLine(run),
-              `Run ${run.id}; checkout ${run.checkoutRoot}; model ${run.effective.provider}/${run.effective.model} (${run.effective.thinking})`,
-              `Rex ${JSON.stringify(run.location)}; process ${JSON.stringify(run.process)}`,
-              `Result ${run.paths.result}; events ${run.paths.events}; session ${run.sessionFile ?? run.paths.sessionDir}`,
-            ].join("\n"),
-          )
-          .join("\n\n") || "No subagents",
+        [
+          selected
+            .slice(0, 30)
+            .map((run) =>
+              [
+                statusLine(run),
+                `Run ${run.id}; checkout ${run.checkoutRoot}; model ${run.effective.provider}/${run.effective.model} (${run.effective.thinking})`,
+                `Rex ${JSON.stringify(run.location)}; process ${JSON.stringify(run.process)}`,
+                `Result ${run.paths.result}; events ${run.paths.events}; session ${run.sessionFile ?? run.paths.sessionDir}`,
+              ].join("\n"),
+            )
+            .join("\n\n") || "No subagents",
+          pending ? `${pending} background result(s) pending delivery` : "",
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
       );
       ctx.ui.notify(text, "info");
       pi.sendMessage(
@@ -287,7 +575,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     name: "subagent",
     label: "Subagent",
     description:
-      "Delegate one task to a fresh interactive Pi in a background Rex tab and wait for its outcome. access is read (only read, grep, find, ls, and git_read), inspect (normal tools except edit and write; the result reports whether the checkout changed during the run), or write. Ask for a short final report; have bulk output written to a file the report names. Inherits the parent's effective model and thinking unless overridden. Output is capped at 50 KB / 2000 lines, with the full session path. background is not supported yet. Nested launches are refused until phase 6; children do not get this tool.",
+      "Delegate one task to a fresh interactive Pi in a background Rex tab. access is read (only read, grep, find, ls, and git_read), inspect (normal tools except edit and write; the result reports whether the checkout changed during the run), or write. Ask for a short final report; have bulk output written to a file the report names. Inherits the parent's effective model and thinking unless overridden. Output is capped at 50 KB / 2000 lines, with the full session path. Leave background false for a short fan-out whose results this turn needs. Set background true for long work, or work the human may redirect the parent around: it returns the run ID once the run is admitted or queued, and the result arrives later, coalesced with other background results. Nested launches are refused until phase 6; children do not get this tool.",
     parameters: LaunchInput,
     async execute(_id, input, signal, onUpdate, ctx) {
       const run = prepared.get(_id) ?? (await prepareRun(input, ctx));
@@ -318,6 +606,27 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         ctx.ui.setWidget("subagents", lines.length ? lines : undefined);
       };
       try {
+        if (run.background) {
+          handed.add(_id);
+          const watched = follow(run, signal, false, progress);
+          const ready = await watched.ready;
+          watched.release();
+          if (isTerminal(ready.lifecycle))
+            return {
+              content: [{ type: "text" as const, text: resultText(ready) }],
+              details: { runId: ready.id },
+            };
+          const state = ready.queue ? `queued for ${ready.queue.reason}` : "admitted";
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Run ${ready.id} (${ready.label}) is ${state}. The result arrives later.`,
+              },
+            ],
+            details: { runId: ready.id },
+          };
+        }
         const outcome = await runForeground(run, entry, events, signal, progress);
         return {
           content: [
@@ -329,6 +638,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
           details: { runId: run.id },
         };
       } catch (error) {
+        handed.delete(_id);
         run.diagnostic = errorText(error);
         if (run.lifecycle === "admitting") await cancel(run);
         // An admitted launch with no reply may still exist in Rex. Never invent exit proof.

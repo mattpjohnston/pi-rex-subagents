@@ -13,10 +13,12 @@ import {
   parse,
   privateDirectory,
   readRun,
+  readJson,
   readResult,
   runDirectory,
   runPaths,
   stateDir,
+  isTerminal,
   transition,
   writeRun,
   type CheckoutReport,
@@ -63,7 +65,6 @@ export const SHUTDOWN_MS = 10_000;
 export const CANCELLATION_MS = 30_000;
 
 export async function prepareRun(input: LaunchInput, ctx: ExtensionContext): Promise<RunRecord> {
-  if (input.background) throw new Error("Background subagents are not yet supported");
   if (process.env.PI_SUBAGENTS_RUN_ID)
     throw new Error(
       "Nested launch refused: phase 2 effective depth is 1 regardless of limits.json; nesting arrives in phase 6",
@@ -115,7 +116,7 @@ export async function prepareRun(input: LaunchInput, ctx: ExtensionContext): Pro
     access: input.access ?? "write",
     requested: settings.requested,
     effective: settings.effective,
-    background: false,
+    background: input.background === true,
     continueFrom,
     parentSessionId: ctx.sessionManager.getSessionId(),
     parentRunId: null,
@@ -339,75 +340,130 @@ async function finishCheckout(
   }
   return checkout;
 }
+export interface WatchOptions {
+  detach?: AbortSignal;
+  resume?: boolean;
+}
+function stopped(options: WatchOptions): boolean {
+  return options.detach?.aborted === true;
+}
+const launchKey = "pi-rex-subagents:launches";
+function launchWaits(): Map<string, Promise<void>> {
+  const host = globalThis as unknown as Record<string, Map<string, Promise<void>>>;
+  return (host[launchKey] ??= new Map());
+}
+async function savedBefore(run: RunRecord): Promise<Fingerprint | undefined> {
+  try {
+    const value = await readJson(join(dirname(run.paths.run), "fingerprint-before.json"));
+    if (!value || typeof value !== "object" || !("version" in value) || !("state" in value))
+      return undefined;
+    if (value.version !== 1) return undefined;
+    if (value.state === "unknown" && "reason" in value && typeof value.reason === "string")
+      return { version: 1, state: "unknown", reason: value.reason };
+    if (value.state === "ok") return value as Fingerprint;
+  } catch (error) {
+    if (!isMissing(error)) throw error;
+  }
+  return undefined;
+}
 export async function runForeground(
   run: RunRecord,
   entry: string,
   events: RexEvents,
   signal: AbortSignal | undefined,
   progress: Progress,
+  options: WatchOptions = {},
 ): Promise<{ run: RunRecord; result?: ResultFile; checkout?: CheckoutReport }> {
+  if (options.resume) {
+    await launchWaits().get(run.id);
+    Object.assign(run, await readRun(run.id));
+  }
   progress(run);
-  const admitted = await admit(run, signal, progress);
-  if (!admitted || signal?.aborted) {
-    await cancel(run);
-    transition(run, "cancelled");
-    run.process = { state: "exited", code: null };
-    await writeRun(run);
+  if (
+    options.resume &&
+    isTerminal(run.lifecycle) &&
+    (run.process.state === "exited" || run.process.state === "unresolved")
+  )
     return { run };
-  }
-  transition(run, "starting");
-  await writeRun(run);
-  progress(run);
+  if (options.resume && run.lifecycle === "failed" && !run.rex) return { run };
   let before: Fingerprint | undefined;
-  if (run.access === "inspect") {
-    try {
-      before = await captureFingerprint(run.checkoutRoot);
-    } catch (error) {
-      before = { version: 1, state: "unknown", reason: errorText(error) };
+  const launched = options.resume && run.rex && run.lifecycle !== "admitting";
+  if (!launched) {
+    const admitted = await admit(run, signal, progress, options.detach);
+    if (admitted === "paused" || stopped(options)) return { run };
+    if (!admitted || signal?.aborted) {
+      await cancel(run);
+      transition(run, "cancelled");
+      run.process = { state: "exited", code: null };
+      await writeRun(run);
+      return { run };
     }
-    await atomicWrite(join(dirname(run.paths.run), "fingerprint-before.json"), before);
-  }
-  await requireLocalRex();
-  const argv = await childArgv(run, entry);
-  let launch: unknown;
-  try {
-    // Never retry: timeout or a malformed reply can mean the child was launched.
-    launch = await rexJson([
-      "window",
-      "new",
-      "-s",
-      process.env.REX_SESSION ?? "",
-      run.label,
-      "--focus=false",
-      "-c",
-      run.cwd,
-      "--keep-open",
-      "--shell",
-      "none",
-      "--json",
-      "--",
-      ...argv,
-    ]);
-    const reply = object(launch);
-    if (
-      typeof reply.window_id !== "string" ||
-      !Array.isArray(reply.block_ids) ||
-      typeof reply.block_ids[0] !== "string"
-    )
-      throw new Error("Invalid Rex launch reply");
-    run.rex = {
-      sessionId: process.env.REX_SESSION ?? "",
-      windowId: reply.window_id,
-      blockId: reply.block_ids[0],
-    };
-    run.location = { ...run.rex };
-  } catch (error) {
-    run.diagnostic = `Uncertain Rex launch: ${errorText(error)}. Not retried.`;
-    transition(run, "failed");
+    transition(run, "starting");
     await writeRun(run);
-    return { run, checkout: await finishCheckout(run, before) };
+    progress(run);
+    if (run.access === "inspect") {
+      try {
+        before = await captureFingerprint(run.checkoutRoot);
+      } catch (error) {
+        before = { version: 1, state: "unknown", reason: errorText(error) };
+      }
+      await atomicWrite(join(dirname(run.paths.run), "fingerprint-before.json"), before);
+    }
+    if (stopped(options)) return { run };
+    await requireLocalRex();
+    const argv = await childArgv(run, entry);
+    let finishLaunch = () => {};
+    const launchDone = new Promise<void>((resolve) => {
+      finishLaunch = resolve;
+    });
+    launchWaits().set(run.id, launchDone);
+    try {
+      let launch: unknown;
+      try {
+        // Never retry: timeout or a malformed reply can mean the child was launched.
+        launch = await rexJson([
+          "window",
+          "new",
+          "-s",
+          process.env.REX_SESSION ?? "",
+          run.label,
+          "--focus=false",
+          "-c",
+          run.cwd,
+          "--keep-open",
+          "--shell",
+          "none",
+          "--json",
+          "--",
+          ...argv,
+        ]);
+        const reply = object(launch);
+        if (
+          typeof reply.window_id !== "string" ||
+          !Array.isArray(reply.block_ids) ||
+          typeof reply.block_ids[0] !== "string"
+        )
+          throw new Error("Invalid Rex launch reply");
+        run.rex = {
+          sessionId: process.env.REX_SESSION ?? "",
+          windowId: reply.window_id,
+          blockId: reply.block_ids[0],
+        };
+        run.location = { ...run.rex };
+      } catch (error) {
+        run.diagnostic = `Uncertain Rex launch: ${errorText(error)}. Not retried.`;
+        transition(run, "failed");
+        await writeRun(run);
+        return { run, checkout: await finishCheckout(run, before) };
+      }
+      await writeRun(run);
+    } finally {
+      finishLaunch();
+      if (launchWaits().get(run.id) === launchDone) launchWaits().delete(run.id);
+    }
   }
-  await writeRun(run);
+  if (stopped(options) || !run.rex) return { run };
+  if (!before && run.access === "inspect") before = await savedBefore(run);
   events.watch(run.rex.blockId);
   if ((await readClaim(run.paths.claim)) === "cancelled") {
     const location = await locate(run.rex.blockId, run.rex);
@@ -431,6 +487,7 @@ export async function runForeground(
   const startupDeadline = Date.now() + STARTUP_MS;
   try {
     while (true) {
+      if (stopped(options)) return { run, ...(result ? { result } : {}) };
       let changed = await cursor.drain(run);
       for (const event of pushed.splice(0)) {
         observeRexEvent(run, event);
@@ -526,4 +583,35 @@ export async function runForeground(
   } finally {
     events.changes.off(blockId, listener);
   }
+}
+
+/** Returns once the run is admitted or queued. The shared lifecycle keeps watching. */
+export function startBackground(
+  run: RunRecord,
+  entry: string,
+  events: RexEvents,
+  signal: AbortSignal | undefined,
+  progress: Progress,
+  options: WatchOptions,
+): { ready: Promise<RunRecord>; done: Promise<{ run: RunRecord }> } {
+  let release: (current: RunRecord) => void = () => {};
+  const ready = new Promise<RunRecord>((resolve) => {
+    release = resolve;
+  });
+  let released = false;
+  const note = (current: RunRecord) => {
+    progress(current);
+    if (!released && (current.queue !== null || current.lifecycle !== "admitting")) {
+      released = true;
+      release(current);
+    }
+  };
+  const done = runForeground(run, entry, events, signal, note, options).then((outcome) => {
+    if (!released) {
+      released = true;
+      release(outcome.run);
+    }
+    return outcome;
+  });
+  return { ready, done };
 }
