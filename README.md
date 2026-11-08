@@ -18,13 +18,13 @@ The parent must run inside a local Rex session. Children use direct argv, normal
 - `/subagent-takeover` in the child transfers ownership before acknowledging it. The child stays alive across settlement and reload. Ordinary parent cancellation cannot kill it.
 - `continueFrom` forks an earlier, confirmed-exited run's saved session into a new run. It never opens a second live writer on the source session.
 
-Machine-wide admission, reservations, checkout write exclusion, ceilings, background delivery, inbox/control, nesting, dismissal and Rex actions belong to later phases. Phase 1's admission function intentionally does nothing. Do not use this unfinished phase to coordinate concurrent writers on a shared checkout.
+Phase 2 admits foreground writers through a machine-wide file queue. A queued run stores `queue` (`checkout` or `capacity`); `waiting` is only a human dialog or trust prompt and is what raises an attention notice. Live child writers exclude one another on overlapping checkouts, including across parents. The active ceiling defaults to 4. Nested launches are refused: the effective depth is 1 until a later phase, whatever `limits.json` says. The parent's `edit` and `write` are refused inside a checkout held by a live child writer; `bash` is not. `/subagents clear` closes this parent's exited, completed, never-taken-over child blocks. `/subagents dismiss <label|run-id>` closes one exited child block. Readers, background delivery, inbox control, and nesting are later phases.
 
 ## Durable state
 
 State defaults to `getAgentDir()/subagents`, overridable with `PI_SUBAGENTS_STATE_DIR`. Directories are private (`0700`), files private (`0600`). Each `runs/<run-id>/` contains:
 
-- `run.json`: a versioned, boundary-validated record containing label/task path, canonical cwd and checkout root, access, resolved requested settings before thinking clamp, effective settings, continuation reference, parent session/run/depth, immutable launch Rex IDs, current location, artifact paths, lifecycle, process observation, waiting source/kind/title, diagnostics and timestamps. Ownership is not a record field.
+- `run.json`: a versioned, boundary-validated record containing label/task path, canonical cwd and checkout root, access, resolved requested settings before thinking clamp, effective settings, continuation reference, parent session/run/depth, immutable launch Rex IDs, current location, artifact paths, lifecycle, process observation, human-wait source/kind/title, admission `queue` reason/detail, diagnostics and timestamps. Ownership is not a record field.
 - `result.json`: version, matching run ID, outcome, assistant text, session path, effective settings, stop reason, error/cutoff reason and finish time. It is atomically written before claiming the result.
 - `claim`: exactly `result`, `taken_over`, or `cancelled`. A private temporary file is synced and hard-linked into place; first link wins. Empty or malformed claims are errors.
 - `lock/holder.json`: PID, OS process start time and a holder token. Settlement, takeover and cancellation share this lock. Stale recovery requires the admission lock and proof the recorded holder is gone or replaced. An unidentified holder is retained conservatively, not deleted based on age.
@@ -51,6 +51,10 @@ pnpm harness failures
 pnpm harness continuation
 pnpm harness takeover
 pnpm harness trust
+pnpm harness admission
+pnpm harness parallel
+pnpm harness recovery
+pnpm harness terminals
 ```
 
 The harness uses real Pi and Rex, independent temporary state/session directories and only disposable Rex sessions it created. Outputs are archived under ignored `.harness-runs/`. Every run checks hashes of global settings, the installed subagent extension and the trust store, plus colon-separated `HARNESS_GUARD_FILES`. Teardown removes only this run's Rex sessions and scratch directory, including on failure. The trust scenario requires the caller's normal `ask` policy and verifies the selected **session-only** option before sending Enter; it must not save a trust decision.
@@ -64,4 +68,4 @@ Testing hooks, not user features:
 - `PI_SUBAGENTS_LOG_TOOLS` enables child tool-call input logging.
 - The `subagents:test-takeover-claimed` extension-bus event lets a harness extension delay acknowledgement after the durable takeover claim to test cross-process cancellation ordering.
 
-The optional `defaultProjectTrust: "always"` check in a separate agent directory is not part of the current trust scenario. Retained reservations after takeover are tested in the admission phase, not phase 1.
+The optional `defaultProjectTrust: "always"` check in a separate agent directory is not part of the current trust scenario. A taken-over child keeps its reservation until its process exits; the recovery scenario checks that release.

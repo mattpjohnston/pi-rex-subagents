@@ -58,18 +58,22 @@ export const Location = Type.Object({ sessionId: text, windowId: text, blockId: 
 export type Location = Static<typeof Location>;
 export const Waiting = Type.Object(
   {
-    source: Type.Union([
-      Type.Literal("reporter"),
-      Type.Literal("rex"),
-      Type.Literal("trust"),
-      Type.Literal("admission"),
-    ]),
+    source: Type.Union([Type.Literal("reporter"), Type.Literal("rex"), Type.Literal("trust")]),
     kind: text,
     title: text,
     since: Type.Number(),
   },
   object,
 );
+export const QueueState = Type.Object(
+  {
+    reason: Type.Union([Type.Literal("checkout"), Type.Literal("capacity")]),
+    detail: text,
+    since: Type.Number(),
+  },
+  object,
+);
+export type QueueState = Static<typeof QueueState>;
 export const RunRecord = Type.Object(
   {
     version: Type.Literal(1),
@@ -106,6 +110,7 @@ export const RunRecord = Type.Object(
     lifecycle: Lifecycle,
     process: ProcessObservation,
     waiting: Type.Union([Waiting, Type.Null()]),
+    queue: Type.Union([QueueState, Type.Null()]),
     sessionFile: nullableText,
     diagnostic: nullableText,
     createdAt: Type.Number(),

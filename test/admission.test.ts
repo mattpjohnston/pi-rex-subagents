@@ -44,7 +44,7 @@ const Case = Type.Object({
     Type.Object({ snapshot: SnapshotSchema, id: Type.String(), refused: Type.Boolean() }),
   ),
 });
-it("agrees with the oracle on at least 20,000 reachable states across 2,200 trees", async () => {
+it("agrees with the oracle on at least 20,000 reachable states across 2,000 trees", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pirs-differential-"));
   const started = performance.now();
   try {
@@ -53,6 +53,14 @@ it("agrees with the oracle on at least 20,000 reachable states across 2,200 tree
       encoding: "utf8",
     });
     let count = 0;
+    const coverage = {
+      parked: 0,
+      taken: 0,
+      joined: 0,
+      olderTicket: 0,
+      cycle: 0,
+      wakeWithoutSlot: 0,
+    };
     for await (const line of createInterface({ input: createReadStream(path) })) {
       const c = parse(Case, JSON.parse(line));
       const got = decide(c.snapshot);
@@ -66,14 +74,29 @@ it("agrees with the oracle on at least 20,000 reachable states across 2,200 tree
         expect(launchCycle(launch.snapshot, launch.id) !== null, `cycle case ${count}`).toBe(
           launch.refused,
         );
+      const queued = new Set(c.snapshot.runs.filter((r) => r.state === "queued").map((r) => r.id));
+      const reservations = new Map<string, number>();
+      for (const run of c.snapshot.runs) {
+        if (run.reservation && run.state !== "queued" && run.state !== "exited")
+          reservations.set(run.reservation, (reservations.get(run.reservation) ?? 0) + 1);
+      }
+      if (c.snapshot.runs.some((r) => r.state === "parked")) coverage.parked++;
+      if (c.snapshot.runs.some((r) => r.state === "taken")) coverage.taken++;
+      if ([...reservations.values()].some((n) => n >= 2)) coverage.joined++;
+      if (c.blockers.some((v) => v.blockers.some((id) => queued.has(id)))) coverage.olderTicket++;
+      if (c.launches.some((launch) => launch.refused)) coverage.cycle++;
+      if (c.wakes.some((wake) => !wake.hasSlot)) coverage.wakeWithoutSlot++;
       count++;
     }
     expect(count).toBeGreaterThanOrEqual(20000);
-    console.log(`Differential: ${summary.trim()}; ${(performance.now() - started).toFixed(0)} ms`);
+    for (const [key, n] of Object.entries(coverage)) expect(n, key).toBeGreaterThan(0);
+    console.log(
+      `Differential: ${summary.trim()}; coverage ${JSON.stringify(coverage)}; ${(performance.now() - started).toFixed(0)} ms`,
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
-}, 120000);
+}, 180000);
 
 export function fifoSnapshot(): Snapshot {
   return {

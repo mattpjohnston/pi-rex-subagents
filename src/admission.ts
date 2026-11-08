@@ -1,4 +1,4 @@
-import { readdir, unlink } from "node:fs/promises";
+import { appendFile, readdir, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { Type, type Static } from "typebox";
@@ -22,7 +22,7 @@ import {
   writeRun,
   RunRecord,
 } from "./records.ts";
-import { observeProcess } from "./rex.ts";
+import { observeProcess, traceRex } from "./rex.ts";
 
 const positive = Type.Integer({ minimum: 1 });
 const LimitsFile = Type.Object(
@@ -102,25 +102,33 @@ export async function updateMemberProvider(runId: string, provider: string): Pro
   });
 }
 /** Called only under admission lock. Unknown launch/liveness never frees a reservation. */
-async function collect(): Promise<Reservation[]> {
+async function collect(): Promise<{ reservations: Reservation[]; checked: number }> {
+  let checked = 0;
   const reservations = await readReservations();
   for (const reservation of reservations) {
     const kept = [];
     for (const member of reservation.members) {
       const record = await readRun(member.runId);
-      const exited = record.rex
-        ? (await observeProcess(record.location ?? record.rex)).process.state === "exited"
-        : record.process.state === "exited";
+      let exited = record.process.state === "exited";
+      if (record.rex) {
+        checked += 1;
+        exited = (await observeProcess(record.location ?? record.rex)).process.state === "exited";
+      }
       if (!exited) kept.push(member);
     }
     reservation.members = kept;
     if (kept.length) await atomicWrite(pathForReservation(reservation.id), reservation);
     else await unlink(pathForReservation(reservation.id));
   }
-  return reservations.filter((reservation) => reservation.members.length);
+  return {
+    reservations: reservations.filter((reservation) => reservation.members.length),
+    checked,
+  };
 }
-async function pass(limits: Limits): Promise<{ snapshot: Snapshot; reservations: Reservation[] }> {
-  const reservations = await collect();
+async function pass(
+  limits: Limits,
+): Promise<{ snapshot: Snapshot; reservations: Reservation[]; checked: number }> {
+  const { reservations, checked } = await collect();
   const runs: AdmissionRun[] = [];
   for (const reservation of reservations)
     for (const member of reservation.members) {
@@ -176,7 +184,17 @@ async function pass(limits: Limits): Promise<{ snapshot: Snapshot; reservations:
     await unlink(pathForTicket({ runId: run.id, seq: run.ticket }));
     if (!reservations.includes(reservation)) reservations.push(reservation);
   }
-  return { snapshot, reservations };
+  return { snapshot, reservations, checked };
+}
+async function notePass(metric: {
+  holdMs: number;
+  rexCalls: number;
+  members: number;
+  checked: number;
+}): Promise<void> {
+  const path = process.env.PI_SUBAGENTS_ADMISSION_METRICS;
+  if (!path) return;
+  await appendFile(path, `${JSON.stringify({ at: Date.now(), ...metric })}\n`);
 }
 export async function admit(
   run: RunRecord,
@@ -207,35 +225,53 @@ export async function admit(
     await atomicWrite(pathForTicket({ runId: run.id, seq }), { runId: run.id, seq });
   });
   while (true) {
-    const outcome = await withAdmissionLock(async () => {
-      const limits = await readLimits();
-      if (signal?.aborted || (await readClaim(run.paths.claim))) {
-        await removeTicket(run.id);
-        return "cancelled";
-      }
-      const { snapshot, reservations } = await pass(limits);
-      if (reservations.some((r) => r.members.some((m) => m.runId === run.id))) return "admitted";
-      const ticket = decide(snapshot).tickets.find((ticket) => ticket.id === run.id);
-      const reason =
-        ticket?.reason === "checkout"
-          ? `checkout: ${ticket.blockers.join(", ")}`
-          : "capacity: active or provider ceiling / older capacity ticket";
-      if (run.waiting?.title !== reason) {
-        run.waiting = {
-          source: "admission",
-          kind: ticket?.reason ?? "capacity",
-          title: reason,
-          since: Date.now(),
-        };
-        await writeRun(run);
-        progress(run);
-      }
-      return "waiting";
+    const measured = await withAdmissionLock(async () => {
+      const started = performance.now();
+      const traced = await traceRex(async () => {
+        const limits = await readLimits();
+        if (signal?.aborted || (await readClaim(run.paths.claim))) {
+          await removeTicket(run.id);
+          if (run.queue) {
+            run.queue = null;
+            await writeRun(run);
+          }
+          return { outcome: "cancelled" as const, members: 0, checked: 0 };
+        }
+        const { snapshot, reservations, checked } = await pass(limits);
+        const members = reservations.reduce(
+          (count, reservation) => count + reservation.members.length,
+          0,
+        );
+        if (reservations.some((r) => r.members.some((m) => m.runId === run.id))) {
+          if (run.queue) {
+            run.queue = null;
+            await writeRun(run);
+          }
+          return { outcome: "admitted" as const, members, checked };
+        }
+        const ticket = decide(snapshot).tickets.find((item) => item.id === run.id);
+        const reason = ticket?.reason === "checkout" ? "checkout" : "capacity";
+        const detail =
+          reason === "checkout"
+            ? ticket?.blockers.join(", ") || "overlapping checkout"
+            : "active or provider ceiling, or an older capacity ticket";
+        if (run.queue?.reason !== reason || run.queue.detail !== detail) {
+          run.queue = { reason, detail, since: run.queue?.since ?? Date.now() };
+          await writeRun(run);
+          progress(run);
+        }
+        return { outcome: "waiting" as const, members, checked };
+      });
+      return {
+        outcome: traced.value.outcome,
+        members: traced.value.members,
+        checked: traced.value.checked,
+        holdMs: performance.now() - started,
+        rexCalls: traced.calls,
+      };
     });
-    if (outcome !== "waiting") {
-      run.waiting = null;
-      return outcome === "admitted";
-    }
+    await notePass(measured);
+    if (measured.outcome !== "waiting") return measured.outcome === "admitted";
     await delay(200);
   }
 }
@@ -243,7 +279,7 @@ export async function admit(
 export async function writerOnPath(target: string): Promise<RunRecord | null> {
   return withAdmissionLock(async () => {
     await readLimits();
-    for (const reservation of await collect())
+    for (const reservation of (await collect()).reservations)
       for (const member of reservation.members) {
         if (member.access === "write" && contains(member.checkout, target))
           return readRun(member.runId);

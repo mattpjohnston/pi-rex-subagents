@@ -125,6 +125,7 @@ export async function prepareRun(input: LaunchInput, ctx: ExtensionContext): Pro
     lifecycle: "admitting",
     process: { state: "unknown" },
     waiting: null,
+    queue: null,
     sessionFile: null,
     diagnostic: null,
     createdAt: Date.now(),
@@ -395,6 +396,7 @@ export async function runForeground(
       if (winner === "taken_over") {
         transition(run, "taken_over");
         run.waiting = null;
+        run.queue = null;
         await writeRun(run);
         progress(run);
         return { run };
@@ -454,7 +456,7 @@ export async function runForeground(
         break;
       }
       if (changed) await writeRun(run);
-      const summary = JSON.stringify([run.lifecycle, run.waiting]);
+      const summary = JSON.stringify([run.lifecycle, run.waiting, run.queue]);
       if (summary !== shown) {
         progress(run);
         shown = summary;
@@ -462,6 +464,7 @@ export async function runForeground(
       await delay(200);
     }
     run.waiting = null;
+    run.queue = null;
     await writeRun(run);
     progress(run);
     return { run, ...(result ? { result } : {}) };

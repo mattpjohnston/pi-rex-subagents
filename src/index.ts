@@ -31,10 +31,19 @@ const live = (run: RunRecord) => !isTerminal(run.lifecycle) || run.process.state
 const waitingFirst = (a: RunRecord, b: RunRecord) =>
   Number(Boolean(b.waiting)) - Number(Boolean(a.waiting)) || a.createdAt - b.createdAt;
 export function statusLine(run: RunRecord): string {
-  return `${run.label} [${run.access}] ${run.waiting ? (run.waiting.source === "admission" ? `waiting for admission: ${run.waiting.title}` : `waiting for a human: ${run.waiting.kind} — ${run.waiting.title}`) : run.lifecycle}`;
+  const human = run.waiting
+    ? `waiting for a human: ${run.waiting.kind} — ${run.waiting.title}`
+    : null;
+  const queued = run.queue ? `queued for ${run.queue.reason}: ${run.queue.detail}` : null;
+  return `${run.label} [${run.access}] ${[human, queued].filter(Boolean).join("; ") || run.lifecycle}`;
 }
 export function attentionText(run: RunRecord): string {
   return `${statusLine(run)}. Open /subagents go ${run.label}.${run.waiting?.kind === "project_trust" ? ' Pi’s "Trust parent folder" option can cover later worktrees under that root.' : ""}`;
+}
+/** A checkout or capacity queue is not a human wait and must not raise an attention notice. */
+export function progressUpdate(run: RunRecord): { text: string; attention: string | null } {
+  const attention = run.waiting ? attentionText(run) : null;
+  return { text: attention ?? statusLine(run), attention };
 }
 
 export default async function (pi: ExtensionAPI): Promise<void> {
@@ -74,6 +83,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       transition(run, "cancelled");
       run.process = { state: "exited", code: null };
       run.waiting = null;
+      run.queue = null;
       await writeRun(run);
     }
   });
@@ -240,20 +250,20 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       const run = prepared.get(_id) ?? (await prepareRun(input, ctx));
       active.set(run.id, run);
       const progress = (current: RunRecord) => {
-        const text =
-          current.waiting && current.waiting.source !== "admission"
-            ? attentionText(current)
-            : statusLine(current);
-        onUpdate?.({ content: [{ type: "text", text }], details: { runId: current.id } });
+        const update = progressUpdate(current);
+        onUpdate?.({
+          content: [{ type: "text", text: update.text }],
+          details: { runId: current.id },
+        });
         const previous = notices.get(run.id);
-        if (current.waiting && text !== previous) {
-          ctx.ui.notify(text, "warning");
+        if (update.attention && update.attention !== previous) {
+          ctx.ui.notify(update.attention, "warning");
           pi.sendMessage(
-            { customType: "subagent-attention", content: text, display: true },
+            { customType: "subagent-attention", content: update.attention, display: true },
             { triggerTurn: false },
           );
-          notices.set(run.id, text);
-        } else if (!current.waiting && previous) {
+          notices.set(run.id, update.attention);
+        } else if (!update.attention && previous) {
           ctx.ui.notify(`${current.label}: no longer waiting`, "info");
           notices.delete(run.id);
         }

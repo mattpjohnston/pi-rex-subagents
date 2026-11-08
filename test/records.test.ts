@@ -1,3 +1,4 @@
+import { progressUpdate } from "../src/index.ts";
 import { observeRexEvent, runForeground } from "../src/launch.ts";
 import { RexEvents } from "../src/rex.ts";
 import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -41,6 +42,7 @@ function record(root: string): RunRecord {
     lifecycle: "admitting",
     process: { state: "unknown" },
     waiting: null,
+    queue: null,
     sessionFile: null,
     diagnostic: null,
     createdAt: 0,
@@ -157,4 +159,23 @@ it("repairs permissions on a pre-existing state directory", async () => {
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+it("does not raise an attention notice for a queued run", () => {
+  const run = record(tmpdir());
+  run.queue = { reason: "checkout", detail: "older-writer", since: 1 };
+  const queued = progressUpdate(run);
+  expect(queued.attention).toBeNull();
+  expect(queued.text).toContain("queued for checkout: older-writer");
+  expect(queued.text).not.toContain("waiting for a human");
+  expect(() =>
+    parse(RunRecord, {
+      ...run,
+      waiting: { source: "admission", kind: "capacity", title: "capacity", since: 1 },
+    }),
+  ).toThrow();
+  run.waiting = { source: "reporter", kind: "question", title: "Need a decision", since: 2 };
+  const both = progressUpdate(run);
+  expect(both.attention).toContain("waiting for a human");
+  expect(both.attention).toContain("queued for checkout");
+  expect(both.text).toBe(both.attention);
 });

@@ -160,3 +160,14 @@ export function watchRex(run: Run): { seen: BlockEvent[]; stop: () => void } {
     },
   };
 }
+
+/** Pi wraps TUI text before Rex captures it, including long IDs; compare across those wraps. */
+export async function captureContains(
+  run: Run,
+  location: { sessionId: string; blockId: string },
+  text: string,
+): Promise<boolean> {
+  return success(await run.rex.capture(location.sessionId, location.blockId))
+    .stdout.replace(/\s/g, "")
+    .includes(text.replace(/\s/g, ""));
+}

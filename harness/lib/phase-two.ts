@@ -35,7 +35,7 @@ export async function finished(run: Run, record: RunRecord): Promise<RunRecord> 
 export async function queued(run: Run, record: RunRecord, kind = "checkout"): Promise<RunRecord> {
   return until(`queued ${record.label} for ${kind}`, async () => {
     const r = await current(run, record.id);
-    return r.waiting?.source === "admission" && r.waiting.kind === kind && r;
+    return r.queue?.reason === kind && r.waiting === null && r;
   });
 }
 const Reservation = Type.Object({

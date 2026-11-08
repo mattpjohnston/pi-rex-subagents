@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { withRun } from "../lib/run.ts";
 import { current, send, start, until } from "../lib/phase-one.ts";
 import { directory, finished, hold, queued, release, sample } from "../lib/phase-two.ts";
@@ -99,6 +100,8 @@ export default async function admission(): Promise<void> {
         "admission item 5 worktrees: PASS; independent linked-worktree writer overlaps a dialog writer while a conflicting ticket waits without holding capacity. Shared Git metadata and external services remain the parent's responsibility.",
       );
 
+      const metricsPath = join(run.out, "admission-metrics.ndjson");
+      process.env.PI_SUBAGENTS_ADMISSION_METRICS = metricsPath;
       const launched = [];
       for (let i = 0; i < 4; i++)
         launched.push(
@@ -113,9 +116,12 @@ export default async function admission(): Promise<void> {
         const live = await Promise.all(records.map((r) => current(run, r.id)));
         return (
           live.filter((r) => r.rex).length === 2 &&
-          live.filter((r) => r.waiting?.kind === "capacity").length === 2
+          live.filter((r) => r.queue?.reason === "capacity").length === 2
         );
       });
+      const steadyStart = Date.now();
+      await delay(5000);
+      const steadyEnd = Date.now();
       const ordered = await Promise.all(records.map((r) => current(run, r.id)));
       const live = ordered.filter((r) => r.rex),
         pending = ordered.filter((r) => !r.rex);
@@ -145,6 +151,11 @@ export default async function admission(): Promise<void> {
       await release(await hold(run, last));
       await finished(run, last);
       await Promise.all(launched.map((p) => p.answer()));
+      const timing = await lockTiming(metricsPath, steadyStart, steadyEnd);
+      await run.record("lock-timing.json", timing);
+      console.log(
+        `admission lock timing (four-parent steady window): passes=${timing.passes} holdMs min/p50/p95/max=${timing.holdMs.min.toFixed(1)}/${timing.holdMs.p50.toFixed(1)}/${timing.holdMs.p95.toFixed(1)}/${timing.holdMs.max.toFixed(1)} rexCalls/s=${timing.rexCallsPerSec.toFixed(1)} livenessChecks=${timing.livenessChecks}`,
+      );
       console.log(
         "admission item 5 ceilings: PASS; four parents share active=2, then edited provider ceiling=1 gates the next launch without reload",
       );
@@ -168,4 +179,36 @@ export default async function admission(): Promise<void> {
       await stop();
     }
   });
+}
+async function lockTiming(path: string, since: number, untilAt: number) {
+  const raw = await readFile(path, "utf8");
+  const rows = raw
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map(
+      (line) =>
+        JSON.parse(line) as {
+          at: number;
+          holdMs: number;
+          rexCalls: number;
+          members: number;
+          checked: number;
+        },
+    )
+    .filter((row) => row.at >= since && row.at <= untilAt);
+  assert(rows.length >= 4, `expected admission pass timings, saw ${rows.length}`);
+  const holds = rows.map((row) => row.holdMs).sort((a, b) => a - b);
+  const pick = (q: number) =>
+    holds[Math.min(holds.length - 1, Math.floor(q * (holds.length - 1)))] ?? 0;
+  const span = Math.max(0.001, ((rows.at(-1)?.at ?? since) - (rows[0]?.at ?? since)) / 1000);
+  const rexCalls = rows.reduce((n, row) => n + row.rexCalls, 0);
+  return {
+    passes: rows.length,
+    holdMs: { min: pick(0), p50: pick(0.5), p95: pick(0.95), max: pick(1) },
+    rexCalls,
+    rexCallsPerSec: rexCalls / span,
+    livenessChecks: rows.reduce((n, row) => n + row.checked, 0),
+    windowMs: untilAt - since,
+  };
 }
