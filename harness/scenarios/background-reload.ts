@@ -4,7 +4,14 @@ import { join } from "node:path";
 import { NOTE_TYPE } from "../../src/delivery.ts";
 import { maybeFile, records, send, until } from "../lib/phase-one.ts";
 import { directory, release } from "../lib/phase-two.ts";
-import { entries, parentLaunch, resultsEntries, sessionPath } from "../lib/phase-four.ts";
+import {
+  entries,
+  parentLaunch,
+  resultsEntries,
+  sessionPath,
+  turnEnded,
+} from "../lib/phase-four.ts";
+import { parentArgv } from "../lib/pi.ts";
 import { repo, withRun } from "../lib/run.ts";
 
 const hold =
@@ -16,7 +23,7 @@ export default async function backgroundReload(): Promise<void> {
     const plans = [0, 1].map((index) => ({
       label: `reload-${index}`,
       cwd,
-      access: "read" as const,
+      access: "inspect" as const,
       background: true,
       task: hold,
     }));
@@ -27,14 +34,14 @@ export default async function backgroundReload(): Promise<void> {
       await parentLaunch(
         run,
         "reload",
-        "Call harness_background exactly once now. Do not call other tools. After it returns, reply OK.",
+        "Call harness_background exactly once now. Do not call other tools. After it returns, reply OK. Whenever background subagent results arrive later, reply RECEIVED and use no tools.",
         [],
         { HARNESS_PLANS: plansPath, HARNESS_RESPONSE: join(run.out, "reload-response.json") },
       ),
     );
     const children = await until("reload children running", async () => {
       const all = (await records(run)).filter((record) => record.label.startsWith("reload-"));
-      return all.length === 2 && all.every((record) => record.rex) ? all : null;
+      return all.length === 2 && all.every((record) => record.rex && record.loadedAt) ? all : null;
     });
     const before = await Promise.all(
       children.map(async (record) => ({
@@ -43,6 +50,7 @@ export default async function backgroundReload(): Promise<void> {
         loads: (await maybeFile(record.paths.events))?.split("child_loaded").length,
       })),
     );
+    await turnEnded(run, "reload");
     await send(run, parent, "/reload");
     await until("reload reattached", async () => {
       const log = await maybeFile(join(run.out, "reload-tools.jsonl.lifecycle"));
@@ -58,7 +66,7 @@ export default async function backgroundReload(): Promise<void> {
       );
       assert.equal(current?.process.state, "live");
     }
-    for (const record of children) await release(record);
+    await Promise.all(children.map(release));
     await until(
       "results after reload",
       async () => {
@@ -83,7 +91,7 @@ export default async function backgroundReload(): Promise<void> {
       await parentLaunch(
         run,
         "timer",
-        "Call harness_background exactly once now. Do not call other tools. After it returns, reply OK.",
+        "Call harness_background exactly once now. Do not call other tools. After it returns, reply OK. Whenever background subagent results arrive later, reply RECEIVED and use no tools.",
         [],
         {
           HARNESS_PLANS: timerPath,
@@ -98,6 +106,7 @@ export default async function backgroundReload(): Promise<void> {
         ? true
         : null;
     });
+    await turnEnded(run, "timer");
     await send(run, timerParent, "/reload");
     await until(
       "one delivery after timer reload",
@@ -125,7 +134,7 @@ export default async function backgroundReload(): Promise<void> {
       await parentLaunch(
         run,
         "kill",
-        "Call harness_background exactly once now. Do not call other tools. After it returns, reply OK.",
+        "Call harness_background exactly once now. Do not call other tools. After it returns, reply OK. Whenever background subagent results arrive later, reply RECEIVED and use no tools.",
         ["-e", join(repo, "harness", "kill-after-delivery.ts")],
         {
           HARNESS_PLANS: killPath,
@@ -137,7 +146,8 @@ export default async function backgroundReload(): Promise<void> {
     );
     await until("killed between delivery and provider request", () => maybeFile(marker), 180_000);
     const saved = await sessionPath(run, "kill");
-    const restart = await parentLaunch(run, "kill-restart", "Continue.", [], {
+    // A restart loads only the extension under test; the batch tool needs a plan this launch does not have.
+    const restart = await parentArgv(run, "kill-restart", "Continue.", {
       PI_SUBAGENTS_COALESCE_MS: "0",
     });
     restart.pop();

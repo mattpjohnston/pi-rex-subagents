@@ -1,11 +1,17 @@
 import assert from "node:assert/strict";
-import { writeFile } from "node:fs/promises";
+import { realpath, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { readClaim } from "../../src/claims.ts";
 import { captureContains, current, key, records, send, until } from "../lib/phase-one.ts";
 import { directory } from "../lib/phase-two.ts";
-import { entries, parentLaunch, resultsEntries, sessionPath } from "../lib/phase-four.ts";
+import {
+  entries,
+  parentLaunch,
+  resultsEntries,
+  sessionPath,
+  turnEnded,
+} from "../lib/phase-four.ts";
 import { withRun, type Run } from "../lib/run.ts";
 
 const hold =
@@ -26,7 +32,7 @@ async function holding(run: Run, label: string) {
     await parentLaunch(
       run,
       label,
-      "Call harness_background exactly once now. Do not call other tools. After it returns, reply OK.",
+      "Call harness_background exactly once now. Do not call other tools. After it returns, reply OK. Whenever background subagent results arrive later, reply RECEIVED and use no tools.",
       [],
       { HARNESS_PLANS: plansPath, HARNESS_RESPONSE: join(run.out, `${label}-response.json`) },
     ),
@@ -35,11 +41,7 @@ async function holding(run: Run, label: string) {
     const record = (await records(run)).find((item) => item.label === `${label}-child` && item.rex);
     return record ?? null;
   });
-  await until(`${label} parent replied`, async () => {
-    const path = await sessionPath(run, label).catch(() => "");
-    if (!path) return null;
-    return (await entries(path)).some((row) => row.type === "message") ? path : null;
-  });
+  await turnEnded(run, label);
   return { parent, child };
 }
 async function refuse(run: Run, parent: { sessionId: string; blockId: string }, command: string) {
@@ -83,9 +85,19 @@ export default async function backgroundSwitch(): Promise<void> {
       45_000,
     );
     assert.equal(await readClaim(fresh.child.paths.claim), "cancelled");
+    // The record is written cancelled just before the outcome is appended, so wait for the append.
+    const appended = await until(
+      "outcome appended to the old session",
+      async () => {
+        const rows = await entries(session);
+        const at = rows.findIndex((row) => resultsEntries([row]).length === 1);
+        return at >= 0 ? rows.slice(at + 1) : null;
+      },
+      20_000,
+    );
     assert(
-      resultsEntries(await entries(session)).length >= 1,
-      "Outcome must be appended to the old session",
+      !appended.some((row) => row.type === "message"),
+      "The append to the old session must not start a turn",
     );
 
     const quitting = await holding(run, "quit");
@@ -99,7 +111,11 @@ export default async function backgroundSwitch(): Promise<void> {
       },
       45_000,
     );
-    assert(resultsEntries(await entries(quitSession)).length >= 1);
+    await until(
+      "outcome appended on quit",
+      async () => (resultsEntries(await entries(quitSession)).length >= 1 ? true : null),
+      20_000,
+    );
 
     const cloning = await holding(run, "clone");
     await refuse(run, cloning.parent, "/clone");
@@ -158,7 +174,8 @@ export default async function backgroundSwitch(): Promise<void> {
     );
 
     const resuming = await holding(run, "resume");
-    const other = SessionManager.create(run.scratch, join(run.sessions, "resume"));
+    // The parent records its realpath cwd, and /resume lists only sessions from that folder.
+    const other = SessionManager.create(await realpath(run.scratch), join(run.sessions, "resume"));
     other.appendMessage({ role: "user", content: "other session", timestamp: Date.now() });
     await send(run, resuming.parent, "/resume");
     await until(
@@ -215,7 +232,7 @@ export default async function backgroundSwitch(): Promise<void> {
       await parentLaunch(
         run,
         "tree",
-        "Call harness_background exactly once now. Do not call other tools. After it returns, reply OK.",
+        "Call harness_background exactly once now. Do not call other tools. After it returns, reply OK. Whenever background subagent results arrive later, reply RECEIVED and use no tools.",
         [],
         {
           HARNESS_PLANS: treePlans,
@@ -233,8 +250,11 @@ export default async function backgroundSwitch(): Promise<void> {
       },
       180_000,
     );
+    await turnEnded(run, "tree");
     await send(run, treeParent, "/tree");
-    await until("tree selector", () => captureContains(run, treeParent, "tree"), 20_000);
+    await until("tree selector", () => captureContains(run, treeParent, "Session Tree"), 20_000);
+    // Two steps up from the leaf is the reply before the delivery, a branch without it.
+    await key(run, treeParent, "up");
     await key(run, treeParent, "up");
     await key(run, treeParent, "enter");
     if (await captureContains(run, treeParent, "Summarize")) await key(run, treeParent, "enter");

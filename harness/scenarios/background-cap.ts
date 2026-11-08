@@ -24,7 +24,7 @@ export default async function backgroundCap(): Promise<void> {
       await parentLaunch(
         run,
         "cap",
-        "Call harness_background exactly once now. Do not call other tools. After it returns, reply OK.",
+        "Call harness_background exactly once now. Do not call other tools. After it returns, reply OK. Whenever background subagent results arrive later, reply RECEIVED and use no tools.",
         [],
         {
           HARNESS_PLANS: plansPath,

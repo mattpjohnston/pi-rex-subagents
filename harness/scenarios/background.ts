@@ -10,7 +10,8 @@ import { withRun, type Run } from "../lib/run.ts";
 const holdTask =
   "Call harness_hold exactly once and wait until it is released, then reply briefly. Do not use other tools.";
 
-function plan(label: string, cwd: string, access: "read" | "write" = "read") {
+// Hold tasks need the harness hold tool, which read mode correctly withholds; inspect is admitted as a reader.
+function plan(label: string, cwd: string, access: "inspect" | "write" = "inspect") {
   return { label, cwd, access, background: true, task: holdTask };
 }
 function role(row: Record<string, unknown>): string | undefined {
@@ -37,7 +38,7 @@ async function launch(
     await parentLaunch(
       run,
       label,
-      "Call harness_background exactly once now. Do not call subagent yourself or other tools. After it returns, reply OK.",
+      "Call harness_background exactly once now. Do not call subagent yourself or other tools. After it returns, reply OK. Whenever background subagent results arrive later, reply RECEIVED and use no tools.",
       [],
       { HARNESS_PLANS: plansPath, HARNESS_RESPONSE: response, ...env },
     ),
@@ -84,7 +85,7 @@ export default async function background(): Promise<void> {
     const hold = join(run.out, "busy-hold");
     const guardPath = join(run.out, "busy-guard.json");
     const busyPlans = [0, 1, 2, 3, 4].map((index) =>
-      plan(`busy-${index}`, checkout, index === 0 ? "write" : "read"),
+      plan(`busy-${index}`, checkout, index === 0 ? "write" : "inspect"),
     );
     const busy = await launch(run, "busy", busyPlans, {
       HARNESS_GUARD_INSIDE: inside,
@@ -101,7 +102,7 @@ export default async function background(): Promise<void> {
     assert.doesNotMatch(toolText(guard.writeOutside), /holds checkout/);
     assert.doesNotMatch(toolText(guard.bash), /refused|holds checkout/i);
     assert.match((await maybeFile(outside)) ?? "", /allowed/);
-    for (const record of running) await release(record);
+    await Promise.all(running.map(release));
     await until("children finished while parent busy", async () => {
       const all = await records(run);
       return running.every(
@@ -120,14 +121,15 @@ export default async function background(): Promise<void> {
 
     const idleRoot = await directory(run, "idle");
     const idlePlans = [0, 1, 2, 3, 4].map((index) => plan(`idle-${index}`, idleRoot));
-    const idle = await launch(run, "idle", idlePlans);
+    // Each child still makes one model reply after release, and that latency spreads past 1 s.
+    const idle = await launch(run, "idle", idlePlans, { PI_SUBAGENTS_COALESCE_MS: "5000" });
     const idleRuns = await idle.children();
     await until("parent idle before children finish", async () => {
       const path = await sessionPath(run, "idle").catch(() => "");
       if (!path) return null;
       return (await entries(path)).some((row) => role(row) === "assistant") ? true : null;
     });
-    for (const record of idleRuns) await release(record);
+    await Promise.all(idleRuns.map(release));
     await oneDelivery(
       run,
       "idle",
