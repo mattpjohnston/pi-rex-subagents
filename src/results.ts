@@ -79,6 +79,9 @@ export function resultText(run: RunRecord, result?: ResultFile, checkout?: Check
         : "Launch location unknown; do not retry blindly",
       report ? checkoutText(report) : "",
       run.diagnostic ?? "",
+      run.lifecycle === "taken_over"
+        ? `Accepted messages not yet consumed at takeover: ${JSON.stringify(run.unconsumedMessages ?? [])}`
+        : "",
       result?.reason ?? "",
       "",
       result?.assistantText ?? "",

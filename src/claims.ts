@@ -59,3 +59,8 @@ export async function withRunLock<T>(
 }
 /** Caller holds the admission lock. A live or unidentified holder is retained, regardless of age. */
 export const recoverStaleRunLock = recoverStaleLock;
+
+/** Every protocol operation takes admission before run, including stale-holder recovery. */
+export async function withProtocolLock<T>(path: string, body: () => Promise<T>): Promise<T> {
+  return withAdmissionLock(() => withRunLock(path, body, true));
+}

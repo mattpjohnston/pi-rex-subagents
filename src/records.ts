@@ -112,6 +112,9 @@ export const RunRecord = Type.Object(
     waiting: Type.Union([Waiting, Type.Null()]),
     queue: Type.Union([QueueState, Type.Null()]),
     sessionFile: nullableText,
+    unconsumedMessages: Type.Optional(
+      Type.Array(Type.Object({ id: text, text: Type.String() }, object)),
+    ),
     diagnostic: nullableText,
     createdAt: Type.Number(),
     updatedAt: Type.Number(),

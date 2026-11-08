@@ -193,7 +193,10 @@ export async function reconcile(run: RunRecord): Promise<void> {
 }
 
 /** Claim before signalling. A result winner may be closed, but never rewritten. */
-export async function cancel(run: RunRecord): Promise<"result" | "taken_over" | "cancelled"> {
+export async function cancel(
+  run: RunRecord,
+  afterClaim?: () => void,
+): Promise<"result" | "taken_over" | "cancelled"> {
   const winner = await withAdmissionLock(async () => {
     const winner = await withRunLock(
       run.paths.lock,
@@ -206,7 +209,17 @@ export async function cancel(run: RunRecord): Promise<"result" | "taken_over" | 
     await removeTicket(run.id);
     return winner;
   });
+  if (winner === "cancelled") afterClaim?.();
   if (winner === "taken_over") return winner;
+  if (winner === "result") {
+    const result = await readResult(run).catch(() => null);
+    const remaining = (result?.finishedAt ?? run.finishedAt ?? 0) + SHUTDOWN_MS - Date.now();
+    if (remaining > 0) await delay(remaining);
+    await reconcile(run);
+    if (run.process.state !== "exited" && run.location) await closeBlock(run.location);
+    await reconcile(run);
+    return winner;
+  }
   await reconcile(run);
   if ((run.process.state === "live" || run.process.state === "unresolved") && run.process.pid) {
     try {
@@ -504,6 +517,24 @@ export async function runForeground(
       }
       let winner = await readClaim(run.paths.claim);
       if (winner === "taken_over") {
+        const pending = parse(
+          Type.Array(
+            Type.Object({
+              id: Type.String(),
+              runId: Type.String(),
+              text: Type.String(),
+              sender: Type.String(),
+              createdAt: Type.Number(),
+            }),
+          ),
+          await readJson(join(dirname(run.paths.run), "takeover-messages.json")).catch(
+            (error: unknown) => {
+              if (isMissing(error)) return [];
+              throw error;
+            },
+          ),
+        );
+        run.unconsumedMessages = pending.map(({ id, text }) => ({ id, text }));
         transition(run, "taken_over");
         run.waiting = null;
         run.queue = null;

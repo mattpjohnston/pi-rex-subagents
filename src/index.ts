@@ -10,6 +10,7 @@ import {
 import { contains } from "./admission-core.ts";
 import { writerOnPath } from "./admission.ts";
 import { canonicalTarget, checkoutRoot } from "./checkout.ts";
+import { cancelControlled, ownedRuns, registerControl } from "./control.ts";
 import { readClaim, type Claim } from "./claims.ts";
 import {
   DELIVERY_NOTE,
@@ -116,6 +117,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     registerReporter(pi, run);
     return;
   }
+  registerControl(pi);
   const events = new RexEvents();
   const active = new Map<string, RunRecord>();
   const watches = new Map<string, AbortController>();
@@ -447,7 +449,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       "List this parent's runs; all lists every live child; go <label> selects its tab; cancel <label|run-id> cancels a background run",
     handler: async (args, ctx) => {
       const all = (await listRuns()).sort(waitingFirst);
-      const owned = all.filter((run) => run.parentSessionId === ctx.sessionManager.getSessionId());
+      const owned = ownedRuns(all, ctx.sessionManager.getSessionId());
       if (args === "clear" || args.startsWith("dismiss ")) {
         const target = args.slice("dismiss ".length).trim();
         const selected =
@@ -475,30 +477,20 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       }
       if (args.startsWith("cancel ")) {
         const target = args.slice("cancel ".length).trim();
-        const matches = [];
-        for (const run of owned) {
-          if (run.id !== target && run.label !== target) continue;
-          const claim = await readClaim(run.paths.claim);
-          if (
-            shouldCancel(transitionView(run, claim, new Set()), ctx.sessionManager.getSessionId())
-          )
-            matches.push(run);
-        }
+        const matches = owned.filter((run) => run.id === target || run.label === target);
         if (matches.length !== 1) {
           ctx.ui.notify(
-            "Cancel requires exactly one queued or running background run of this parent",
+            "Cancel requires exactly one run label or ID belonging to this parent",
             "error",
           );
           return;
         }
         const selected = matches[0];
         if (!selected) return;
-        const winner = await cancel(selected);
+        const response = await cancelControlled(selected);
         ctx.ui.notify(
-          winner === "taken_over"
-            ? `${selected.label} is taken over and was left running`
-            : `Cancelled ${selected.label} (${selected.id})`,
-          winner === "taken_over" ? "warning" : "info",
+          `${selected.label} (${selected.id}): ${response.status}; ${response.reason}`,
+          response.status === "refused" ? "warning" : "info",
         );
         await refresh(ctx);
         return;
