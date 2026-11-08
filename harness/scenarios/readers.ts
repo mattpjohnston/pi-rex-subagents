@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { observeProcess } from "../../src/rex.ts";
 import { repo, withRun } from "../lib/run.ts";
 import { parentArgv } from "../lib/pi.ts";
-import { current, key, maybeFile, records, send, start, until } from "../lib/phase-one.ts";
+import { current, key, records, start, until } from "../lib/phase-one.ts";
 import { directory, finished, hold, queued, release, sample } from "../lib/phase-two.ts";
+import { success } from "../lib/rex.ts";
+import { sessionOnlyTrustIndex } from "../lib/trust.ts";
 import type { Run } from "../lib/run.ts";
 import type { RunRecord } from "../../src/records.ts";
 
@@ -13,45 +15,48 @@ const holdTask =
   "Call harness_hold exactly once and wait until it is released, then reply briefly. Do not use other tools.";
 const readEnv = { PI_SUBAGENTS_CHILD_EXTENSIONS: "" };
 
-async function takeReader(run: Run, label: string, cwd: string): Promise<RunRecord> {
+async function trustHold(run: Run, label: string, cwd: string): Promise<RunRecord> {
   const launched = await start(
     run,
     { label, cwd, access: "read", task: "Reply READY. Do not call tools." },
     readEnv,
   );
   const record = await launched.record();
-  const live = await until(`${label} has a block`, async () => {
+  return until(`${label} waiting on project trust`, async () => {
     const currentRecord = await current(run, record.id);
-    return currentRecord.rex ? currentRecord : null;
+    return currentRecord.waiting?.kind === "project_trust" && currentRecord.rex
+      ? currentRecord
+      : null;
   });
-  assert(live.rex);
-  await send(run, live.rex, "/subagent-takeover");
-  const taken = await until(`${label} taken over`, async () => {
-    const currentRecord = await current(run, record.id);
-    return currentRecord.lifecycle === "taken_over" ? currentRecord : null;
-  });
-  await launched.answer();
-  return taken;
 }
 
-async function quit(run: Run, record: RunRecord): Promise<void> {
-  if (!record.rex) return;
-  await send(run, record.rex, "/quit");
-  const started = Date.now();
-  await until(`${record.label} exited`, async () => {
-    const currentRecord = await current(run, record.id);
-    if (currentRecord.process.state === "exited") return currentRecord;
-    if (record.rex && (await observeProcess(record.rex)).process.state === "exited")
-      return currentRecord;
-    const pid = currentRecord.process.state === "live" ? currentRecord.process.pid : null;
-    if (Date.now() - started > 15_000 && pid) {
+async function answerTrust(run: Run, record: RunRecord): Promise<void> {
+  const live = await current(run, record.id);
+  assert(live.rex);
+  const capture = success(await run.rex.capture(live.rex.sessionId, live.rex.blockId)).stdout;
+  const index = sessionOnlyTrustIndex(capture);
+  for (let step = 0; step < index; step++) await key(run, live.rex, "down");
+  const selected = success(await run.rex.capture(live.rex.sessionId, live.rex.blockId)).stdout;
+  assert.match(selected, /Trust \(this session only\)/);
+  await key(run, live.rex, "enter");
+}
+
+async function stopProcess(run: Run, record: RunRecord): Promise<void> {
+  const live = await current(run, record.id);
+  if (live.process.state === "exited") return;
+  if (live.rex) {
+    const observed = await observeProcess(live.rex);
+    if (observed.process.state === "live" && observed.process.pid) {
       try {
-        process.kill(pid, "SIGTERM");
+        process.kill(observed.process.pid, "SIGTERM");
       } catch (error) {
         if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error;
       }
     }
-    return null;
+  }
+  await until(`${record.label} exited`, async () => {
+    const currentRecord = await current(run, record.id);
+    return currentRecord.process.state === "exited" ? currentRecord : null;
   });
 }
 
@@ -61,26 +66,41 @@ export default async function readers(): Promise<void> {
     const stop = sample(run, 8);
     try {
       const checkout = await directory(run, "shared", true);
-      const first = await takeReader(run, "reader-a", checkout);
-      const second = await takeReader(run, "reader-b", checkout);
+      await mkdir(join(checkout, ".pi"), { mode: 0o700 });
+      await writeFile(join(checkout, ".pi", "settings.json"), "{}", { mode: 0o600 });
+      const first = await trustHold(run, "reader-a", checkout);
+      const second = await trustHold(run, "reader-b", checkout);
       assert(first.rex && second.rex);
       assert.equal(first.checkoutRoot, second.checkoutRoot);
       const writer = await start(run, { label: "waiting-writer", cwd: checkout, task: holdTask });
       const waiting = await queued(run, await writer.record());
       assert.equal(waiting.rex, null);
-      assert.equal((await current(run, first.id)).process.state, "live");
-      assert.equal((await current(run, second.id)).process.state, "live");
       console.log(
-        "readers item 4 overlap: PASS; two readers from two parents overlap; writer has no block",
+        "readers item 4 overlap: PASS; two trust-held readers from two parents overlap; writer has no block",
       );
-      await quit(run, first);
-      await quit(run, second);
+      await stopProcess(run, first);
+      await stopProcess(run, second);
+      await answerTrust(
+        run,
+        await until("writer trust", async () => {
+          const currentRecord = await current(run, waiting.id);
+          return currentRecord.waiting?.kind === "project_trust" ? currentRecord : null;
+        }),
+      );
       await release(await hold(run, waiting));
       await writer.answer();
       await finished(run, waiting);
 
       const holder = await start(run, { label: "blocking-writer", cwd: checkout, task: holdTask });
-      const held = await hold(run, await holder.record());
+      const holderRecord = await holder.record();
+      await answerTrust(
+        run,
+        await until("blocking writer trust", async () => {
+          const currentRecord = await current(run, holderRecord.id);
+          return currentRecord.waiting?.kind === "project_trust" ? currentRecord : null;
+        }),
+      );
+      const held = await hold(run, holderRecord);
       const behindA = await start(
         run,
         {
@@ -118,7 +138,7 @@ export default async function readers(): Promise<void> {
         "readers item 4 behind writer: PASS; both readers stayed queued until the writer exited, then both received blocks",
       );
 
-      const gate = await takeReader(run, "starvation-reader", checkout);
+      const gate = await trustHold(run, "starvation-reader", checkout);
       const older = await start(run, { label: "older-writer", cwd: checkout, task: holdTask });
       const olderQueued = await queued(run, await older.record());
       const newerA = await start(
@@ -144,7 +164,14 @@ export default async function readers(): Promise<void> {
       await queued(run, await newerA.record());
       await queued(run, await newerB.record());
       assert.equal((await current(run, olderQueued.id)).rex, null);
-      await quit(run, gate);
+      await stopProcess(run, gate);
+      await answerTrust(
+        run,
+        await until("older writer trust", async () => {
+          const currentRecord = await current(run, olderQueued.id);
+          return currentRecord.waiting?.kind === "project_trust" ? currentRecord : null;
+        }),
+      );
       const admitted = await hold(run, olderQueued);
       assert.equal((await current(run, (await newerA.record()).id)).rex, null);
       assert.equal((await current(run, (await newerB.record()).id)).rex, null);
@@ -183,9 +210,6 @@ export default async function readers(): Promise<void> {
         return matches[0]?.rex && matches[1]?.rex ? matches : null;
       });
       assert(pair[0]?.rex && pair[1]?.rex);
-      await send(run, pair[0].rex, "/subagent-takeover");
-      await send(run, pair[1].rex, "/subagent-takeover");
-      await until("fanout responses", () => maybeFile(response));
       await key(run, parent, "escape");
       console.log(
         "readers item 4 one parent: PASS; one parent had two read children with blocks at the same time",

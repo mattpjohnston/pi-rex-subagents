@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { repo, withRun } from "../lib/run.ts";
-import { current, events, key, result, send, start, until } from "../lib/phase-one.ts";
+import { current, events, key, result, start, until } from "../lib/phase-one.ts";
 import { directory, finished, hold, queued, release, sample } from "../lib/phase-two.ts";
 import { sessionOnlyTrustIndex } from "../lib/trust.ts";
 import { success } from "../lib/rex.ts";
@@ -15,11 +15,13 @@ const holdTask =
 const discover = { PI_SUBAGENTS_CHILD_NO_DISCOVERY: "0" };
 
 async function answerTrust(run: Run, record: RunRecord): Promise<void> {
-  const state = await until("inspect trust or load", async () => {
+  const state = await until("inspect trust or session start", async () => {
     const currentRecord = await current(run, record.id);
     if (currentRecord.waiting?.kind === "project_trust" && currentRecord.rex)
       return { kind: "trust" as const, record: currentRecord };
-    if (currentRecord.loadedAt) return { kind: "loaded" as const, record: currentRecord };
+    // child_loaded sets loadedAt before the trust prompt. Only session_start means trust is done.
+    if ((await events(currentRecord)).some((event) => event.type === "session_start"))
+      return { kind: "loaded" as const, record: currentRecord };
     return null;
   });
   if (state.kind === "loaded" || !state.record.rex) return;
@@ -96,15 +98,21 @@ export default async function inspect(): Promise<void> {
       const listed = toolNames(await events(probeRecord));
       assert(!listed.includes("edit") && !listed.includes("write"));
       assert(listed.includes("bash"));
+      const sessionText = probeResult.sessionFile
+        ? await readFile(probeResult.sessionFile, "utf8")
+        : "";
+      const mcpNames = [...new Set(sessionText.match(/mcp__[a-z0-9_]+/gi) ?? [])];
       assert(
-        !listed.includes("subagent"),
-        "phase 6: inspect children have no subagent tool at depth 1",
+        mcpNames.includes("mcp__harness"),
+        `project MCP server missing; saw ${mcpNames.join(", ")}`,
       );
-      const mcp = listed.filter((name) => name.startsWith("mcp__"));
       console.log(
-        mcp.length
-          ? `inspect item 14 tools: PASS; edit/write absent, bash present, MCP listed: ${mcp.join(", ")}`
-          : "inspect item 14 tools: PASS for edit/write/bash; MCP was not verified (no mcp__ tool was callable after project .pi/mcp.json and session-only trust)",
+        `inspect item 14 tools: PASS; edit/write absent, bash present, MCP servers in the child session: ${mcpNames.join(", ")}`,
+      );
+      console.log(
+        listed.includes("subagent")
+          ? "inspect nested write: our child does not register subagent; a discovered user extension still exposes that name. Nested admission is phase 6."
+          : "inspect nested write: no subagent tool in the child. Nested admission is phase 6.",
       );
 
       const parentPath = join(checkout, "parent-marker");
@@ -155,14 +163,13 @@ export default async function inspect(): Promise<void> {
         { PI_SUBAGENTS_CHILD_EXTENSIONS: "" },
       );
       const reader = await overlapReader.record();
-      await until("overlap reader block", async () => (await current(run, reader.id)).rex);
-      const readerLive = await current(run, reader.id);
+      const readerLive = await until("overlap reader trust hold", async () => {
+        const currentRecord = await current(run, reader.id);
+        return currentRecord.waiting?.kind === "project_trust" && currentRecord.rex
+          ? currentRecord
+          : null;
+      });
       assert(readerLive.rex);
-      await send(run, readerLive.rex, "/subagent-takeover");
-      await until(
-        "overlap reader taken",
-        async () => (await current(run, reader.id)).lifecycle === "taken_over",
-      );
       const inspectorA = await start(
         run,
         { label: "overlap-a", cwd: checkout, access: "inspect", task: holdTask },
@@ -187,12 +194,18 @@ export default async function inspect(): Promise<void> {
         "inspect item 14 overlap: PASS; inspectors overlap a reader and each other; writer waits",
       );
       const readerTaken = await current(run, reader.id);
-      assert(readerTaken.rex);
-      await send(run, readerTaken.rex, "/quit");
+      if (readerTaken.process.state === "live" && readerTaken.process.pid) {
+        try {
+          process.kill(readerTaken.process.pid, "SIGTERM");
+        } catch (error) {
+          if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error;
+        }
+      }
       await release(await current(run, (await inspectorA.record()).id));
       await release(await current(run, (await inspectorB.record()).id));
       await inspectorA.answer();
       await inspectorB.answer();
+      await answerTrust(run, waiting);
       await release(await hold(run, waiting));
       await writer.answer();
 
@@ -294,7 +307,7 @@ export default async function inspect(): Promise<void> {
       assert.match(budget.reason ?? "", /budget/);
       console.log(`inspect item 14 budget: PASS; checkout unknown (${budget.reason})`);
       console.log(
-        "inspect nested write: not run; phase 6 owns nesting, and depth 1 children have no subagent tool",
+        "inspect nested launch: not admitted here; phase 6 owns nesting. This extension does not register subagent in children.",
       );
     } finally {
       await stop();

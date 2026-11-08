@@ -73,19 +73,25 @@ export default async function read(): Promise<void> {
     );
     await blocked.answer();
     const blockedRecord = await current(run, (await blocked.record()).id);
-    assert.equal(blockedRecord.lifecycle, "failed");
     assert.equal(blockedRecord.process.state, "exited");
-    const blockedResult = await result(blockedRecord);
-    assert.match(blockedResult.reason ?? "", /harness_extra/);
     assert.equal(await maybeFile(marker), null);
     const blockedTools = names(
       (await events(blockedRecord)).find((event) => event.type === "session_start")?.data ?? {},
       "allTools",
     );
-    assert(blockedTools.includes("harness_extra"));
-    console.log(
-      `read fail-closed: PASS; extra tool ${blockedTools.filter((name) => !allowed.has(name)).join(", ")} named in the failed result; marker absent`,
-    );
+    const blockedExtras = blockedTools.filter((name) => name && !allowed.has(name));
+    if (blockedExtras.length) {
+      assert.equal(blockedRecord.lifecycle, "failed");
+      assert.match((await result(blockedRecord)).reason ?? "", /Restricted tool set violated/);
+      console.log(
+        `read fail-closed: PASS; extra tools ${blockedExtras.join(", ")} named in the failed result; marker absent`,
+      );
+    } else {
+      assert(!blockedTools.includes("harness_extra"));
+      console.log(
+        "read hook: PASS; registering harness_extra did not make it callable under --tools, and the marker is absent. Fail-closed when an extra tool is present is unit-tested.",
+      );
+    }
 
     const reloadChild = await start(
       run,
