@@ -1,0 +1,4 @@
+# Neither dependency build is needed by the extension or harness.
+allowBuilds:
+  "@google/genai": false
+  protobufjs: false
