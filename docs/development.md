@@ -40,10 +40,11 @@ Every run gets its own scratch directory under the system temp directory, its ow
 
 Each run hashes Pi's `settings.json`, any installed `extensions/subagent.ts`, and `trust.json` before and after, plus every path in the colon-separated `HARNESS_GUARD_FILES`. It fails if any of them changed.
 
-- `HARNESS_MODEL` selects the model for children, and for parents unless `HARNESS_PARENT_MODEL` is set. The default is `openrouter/nvidia/nemotron-3.5-lightning:free`. The harness tests lifecycle, not task quality.
-- `HARNESS_FAILURE_CASE` runs one case of the `failures` scenario.
+- `HARNESS_MODEL` selects the model for children, and for parents unless `HARNESS_PARENT_MODEL` is set. The default is `openrouter/nvidia/nemotron-3.5-lightning:free`. Any cheap model you are logged in to works; the harness tests lifecycle, not task quality.
+- `HARNESS_OVERRIDE_MODEL` is the explicit override in the `launch` scenario. It must differ from `HARNESS_MODEL`, and a different provider makes the check stronger.
+- `HARNESS_FAILURE_CASE` takes one case of the `failures` scenario, or a comma-separated list.
 
-Free models have daily request limits. If a scenario fails with HTTP 429, wait for the limit to reset instead of rerunning it.
+Free models have daily request limits. If a scenario fails with HTTP 429, wait for the limit to reset or switch `HARNESS_MODEL` instead of rerunning it. Keep the machine awake during long runs (`caffeinate -i` on macOS); a sleep mid-run fails the scenario on timeouts or connection errors.
 
 The trust scenario expects Pi's default `"ask"` trust policy. It checks that the selected answer is "this session only" before pressing Enter, so it never saves a trust decision.
 

@@ -12,7 +12,7 @@ import {
   until,
   watchRex,
 } from "../lib/phase-one.ts";
-import { object } from "../lib/rex.ts";
+import { object, success } from "../lib/rex.ts";
 
 export default async function failures(): Promise<void> {
   await withRun("failures", async (run) => {
@@ -54,7 +54,8 @@ export default async function failures(): Promise<void> {
       ];
       for (const test of cases.filter(
         (test) =>
-          !process.env.HARNESS_FAILURE_CASE || test.mode === process.env.HARNESS_FAILURE_CASE,
+          !process.env.HARNESS_FAILURE_CASE ||
+          process.env.HARNESS_FAILURE_CASE.split(",").includes(test.mode),
       )) {
         const launched = await start(run, {
           label: test.mode,
@@ -122,6 +123,13 @@ export default async function failures(): Promise<void> {
           const answer = await rejected.answer();
           assert.equal(answer.isError, true);
           assert.match(JSON.stringify(object(answer.result).content), /live or unresolved/);
+          // The hang child never exits and holds this checkout as a writer. Close its exact
+          // block as a human would; the next case's admission confirms the release.
+          const where = final.location ?? final.rex;
+          assert(where, "hang child has a Rex block");
+          success(
+            await run.rex.command(["block", "close", "-s", where.sessionId, where.blockId], false),
+          );
         } else assert.equal(final.process.state, "exited");
         await run.record(`${test.mode}-evidence.json`, { final, response });
         console.log(

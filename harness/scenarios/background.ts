@@ -4,7 +4,14 @@ import { join } from "node:path";
 import { readClaim } from "../../src/claims.ts";
 import { maybeFile, records, send, until } from "../lib/phase-one.ts";
 import { directory, release } from "../lib/phase-two.ts";
-import { entries, parentLaunch, resultsEntries, runIds, sessionPath } from "../lib/phase-four.ts";
+import {
+  entries,
+  parentLaunch,
+  resultsEntries,
+  runIds,
+  sessionPath,
+  turnEnded,
+} from "../lib/phase-four.ts";
 import { withRun, type Run } from "../lib/run.ts";
 
 const holdTask =
@@ -124,11 +131,8 @@ export default async function background(): Promise<void> {
     // Each child still makes one model reply after release, and that latency spreads past 1 s.
     const idle = await launch(run, "idle", idlePlans, { PI_SUBAGENTS_COALESCE_MS: "5000" });
     const idleRuns = await idle.children();
-    await until("parent idle before children finish", async () => {
-      const path = await sessionPath(run, "idle").catch(() => "");
-      if (!path) return null;
-      return (await entries(path)).some((row) => role(row) === "assistant") ? true : null;
-    });
+    // A tool-call message is also an assistant message, so wait for the turn itself to end.
+    await turnEnded(run, "idle");
     await Promise.all(idleRuns.map(release));
     await oneDelivery(
       run,
