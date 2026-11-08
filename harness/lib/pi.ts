@@ -29,7 +29,12 @@ async function piExecutable(): Promise<string> {
   throw new Error("Pi executable not found; set PI_SUBAGENTS_PI or add pi to PATH");
 }
 
-export async function parentArgv(run: Run, label: string, prompt: string): Promise<string[]> {
+export async function parentArgv(
+  run: Run,
+  label: string,
+  prompt: string,
+  env: Record<string, string> = {},
+): Promise<string[]> {
   if (!/^[a-z0-9-]+$/.test(label)) throw new Error("Invalid Pi session label");
   const sessionDir = join(run.sessions, label);
   await mkdir(sessionDir, { mode: 0o700 });
@@ -38,6 +43,7 @@ export async function parentArgv(run: Run, label: string, prompt: string): Promi
     "/usr/bin/env",
     `PI_SUBAGENTS_STATE_DIR=${run.state}`,
     `HARNESS_TOOL_LOG=${join(run.out, `${label}-tools.jsonl`)}`,
+    ...Object.entries(env).map(([key, value]) => `${key}=${value}`),
     await piExecutable(),
     "--no-extensions",
     "-e",

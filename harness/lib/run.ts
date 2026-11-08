@@ -63,6 +63,7 @@ export async function withRun(scenario: string, body: (run: Run) => Promise<void
   const stamp = `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomBytes(3).toString("hex")}`;
   const archive = join(repo, ".harness-runs", `${stamp}-${scenario}`);
   const owned: string[] = [];
+  const ownedBlocks: { sessionId: string; blockId: string }[] = [];
   const errors: unknown[] = [];
   const record = async (name: string, data: unknown): Promise<void> => {
     if (!/^[a-z0-9_.-]+$/i.test(name)) throw new Error("Invalid artifact name");
@@ -99,6 +100,7 @@ export async function withRun(scenario: string, body: (run: Run) => Promise<void
         const blocks = object(created.initial_windows[0]).block_ids;
         if (!Array.isArray(blocks) || typeof blocks[0] !== "string")
           throw new Error("Rex launch has no block ID");
+        ownedBlocks.push({ sessionId: created.session_id, blockId: blocks[0] });
         return { sessionId: created.session_id, blockId: blocks[0] };
       },
     });
@@ -108,6 +110,16 @@ export async function withRun(scenario: string, body: (run: Run) => Promise<void
     await teardown();
   }
   async function teardown(): Promise<void> {
+    for (const [index, block] of ownedBlocks.entries()) {
+      try {
+        await record(
+          `parent-capture-${index}.json`,
+          await rex.capture(block.sessionId, block.blockId),
+        );
+      } catch (error) {
+        errors.push(error);
+      }
+    }
     for (const id of owned) {
       try {
         const killed = await rex.killSession(id);

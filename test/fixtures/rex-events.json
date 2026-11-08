@@ -1,0 +1,42 @@
+[
+  {
+    "type": "session_event",
+    "payload": {
+      "session_id": "",
+      "event": {
+        "type": "block_event",
+        "payload": {
+          "block_id": "",
+          "creator_name": "com.superlogical.terminal",
+          "name": "program_status_changed",
+          "payload": {
+            "id": "",
+            "record": {
+              "state": "idle",
+              "app": "pi",
+              "effective_app": "pi",
+              "updated_at": "2026-01-01T00:00:00Z",
+              "owner": { "pid": 1, "name": "pi" }
+            },
+            "reason": "report"
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "session_event",
+    "payload": {
+      "session_id": "",
+      "event": {
+        "type": "block_event",
+        "payload": {
+          "block_id": "",
+          "creator_name": "com.superlogical.terminal",
+          "name": "child_exited",
+          "payload": { "exit_code": 0 }
+        }
+      }
+    }
+  }
+]
