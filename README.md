@@ -112,3 +112,7 @@ It does not manage worktrees, retry tasks, route work, or close terminals on its
 ## Development
 
 See [docs/development.md](docs/development.md) for the checks, the real Pi and Rex acceptance harness, and the testing hooks.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
