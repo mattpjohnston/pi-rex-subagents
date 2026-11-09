@@ -11,7 +11,6 @@ export interface AdmissionRun {
   detached: boolean;
   readyToWake: boolean;
   joining?: string[];
-  joinCycle?: string;
 }
 export interface Limits {
   active: number;
@@ -134,7 +133,6 @@ export function launchCycle(snapshot: Snapshot, start: string): string[] | null 
   const older: AdmissionRun[] = [];
   for (const run of tickets(snapshot)) {
     for (const id of blockers(snapshot, run, older)) edges.get(run.id)?.add(id);
-    if (run.joinCycle) edges.get(run.id)?.add(run.joinCycle);
     older.push(run);
   }
   const visit = (id: string, path: string[], seen: Set<string>): string[] | null => {

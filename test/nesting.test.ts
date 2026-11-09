@@ -128,7 +128,13 @@ it("builds the model's nested reservation, parking, takeover, and ancestry shape
       activity.tools.push({ id: "wrapper", name: "codemode" });
     });
     snapshot = await admissionSnapshot(await readLimits());
-    expect(launchCycle(snapshot, c.id)).toEqual([c.id, b.id, c.id]);
+    expect(launchCycle(snapshot, c.id)).toBeNull();
+    expect(decide(snapshot).tickets.find((r) => r.id === c.id)?.blockers).toEqual([b.id]);
+    await updateActivity(b.id, (activity) => {
+      activity.tools = activity.tools.filter((tool) => tool.name !== "bash");
+    });
+    snapshot = await admissionSnapshot(await readLimits());
+    expect(decide(snapshot).tickets.find((r) => r.id === c.id)?.reason).not.toBe("checkout");
     delete c.launchCaller;
     c.background = true;
     await writeRun(c);

@@ -16,6 +16,7 @@ import { readClaim, withAdmissionLock } from "./claims.ts";
 import {
   atomicWrite,
   errorText,
+  isTerminal,
   isMissing,
   parse,
   privateDirectory,
@@ -174,31 +175,25 @@ export async function admissionSnapshot(
     const reservation = reservationFor(snapshot, run);
     if (!reservation) continue;
     run.joining = [];
-    const launching = records.find((r) => r.id === run.id);
     let parent = run.parent;
     while (parent) {
       const ancestor = runs.find((r) => r.id === parent);
       const record = records.find((r) => r.id === parent);
       if (!ancestor || !record) break;
+      const owner = parent;
+      // A pending launch, and any call that encloses one (codemode, a harness wrapper), only
+      // waits for its child; Pi tracks every call it makes as its own tool, so those still hold.
+      const launchCallers = records
+        .filter((r) => r.parentRunId === owner && r.launchCaller && !isTerminal(r.lifecycle))
+        .map((r) => r.launchCaller ?? "");
+      const encloses = (id: string) =>
+        launchCallers.some((caller) => caller === id || caller.startsWith(`${id}/`));
       if (
         ancestor.reservation === reservation &&
         overlaps(ancestor.checkout, run.checkout) &&
-        record.activity?.tools.some((tool) => tool.name !== "subagent")
+        record.activity?.tools.some((tool) => tool.name !== "subagent" && !encloses(tool.id))
       )
         run.joining.push(parent);
-      if (
-        parent === run.parent &&
-        run.joining.includes(parent) &&
-        launching?.launchCaller &&
-        !launching.background &&
-        record.activity?.tools.some(
-          (tool) =>
-            tool.name !== "subagent" &&
-            (tool.id === launching.launchCaller ||
-              launching.launchCaller?.startsWith(`${tool.id}/`)),
-        )
-      )
-        run.joinCycle = parent;
       parent = ancestor.parent;
     }
   }

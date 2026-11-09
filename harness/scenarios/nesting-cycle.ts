@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { events, maybeFile, records, until } from "../lib/phase-one.ts";
-import { directory, finished, queued } from "../lib/phase-two.ts";
+import { directory, finished, hold, queued, release } from "../lib/phase-two.ts";
 import {
   batchReady,
   call,
@@ -69,16 +69,20 @@ export default async function cycle(): Promise<void> {
     ]);
     const wrapped = await tree(run, delegated("wrapper-owner", wrapperRoot, "write", false));
     const wrapperOwner = await wrapped.record();
+    const wrappedChild = await named(run, "wrapped-child");
+    await release(await hold(run, wrappedChild));
     await wrapped.answer();
     await finished(run, wrapperOwner);
-    const wrappedChild = await named(run, "wrapped-child");
-    const wrapperFailure = (await records(run)).find((r) => r.id === wrappedChild.id);
-    assert(wrapperFailure);
-    assert.equal(wrapperFailure.rex, null);
-    assert.match(wrapperFailure.diagnostic ?? "", /wait cycle/);
-    assert((wrapperFailure.diagnostic ?? "").includes(wrapperOwner.id));
+    const wrapperChild = (await records(run)).find((r) => r.id === wrappedChild.id);
+    assert(wrapperChild);
+    assert(
+      wrapperChild.rex,
+      "a launch inside an enclosing tool call starts instead of waiting on it",
+    );
+    assert.equal(wrapperChild.lifecycle, "completed");
+    assert.doesNotMatch(wrapperChild.diagnostic ?? "", /wait cycle/);
     console.log(
-      "nesting wrapper cycle: PASS; foreground launch waiting for its calling non-launch tool is refused as a cycle, not exempted or deadlocked",
+      "nesting wrapper launch: PASS; a foreground launch made inside an enclosing tool call joins the reservation and completes",
     );
 
     const root = await directory(run, "inspect");
