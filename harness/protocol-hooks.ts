@@ -1,3 +1,4 @@
+import { readdirSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -16,15 +17,25 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   const task = await readFile(run.taskPath, "utf8");
   const dir = dirname(run.paths.run);
   let first = true;
+  // The reporter's inbox poll settles an idle child again every 250 ms, so an idle hold must
+  // cover every settlement until the harness's message reaches the inbox, not just the first.
+  const messageArrived = () => {
+    try {
+      return readdirSync(run.paths.inbox).some((name) => name.endsWith(".json"));
+    } catch {
+      return false;
+    }
+  };
   pi.events.on("subagents:test-settlement", (raw) => {
-    if (!first || !raw || typeof raw !== "object") return;
+    if (!raw || typeof raw !== "object") return;
     const boundary = raw as { runId: string; before: Promise<void>; hold: boolean };
     if (boundary.runId !== id) return;
-    first = false;
-    if (task.includes("HARNESS_MODE=idle")) {
+    if (task.includes("HARNESS_MODE=idle") && !messageArrived()) {
       boundary.hold = true;
-      boundary.before = writeFile(join(dir, "idle-held"), "ready", { mode: 0o600 });
+      if (first) boundary.before = writeFile(join(dir, "idle-held"), "ready", { mode: 0o600 });
     }
+    if (!first) return;
+    first = false;
     if (task.includes("HARNESS_MODE=settle-pause")) {
       boundary.before = (async () => {
         await writeFile(join(dir, "settling-paused"), "ready", { mode: 0o600 });
