@@ -1,0 +1,132 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { expect, it } from "vitest";
+import { admissionSnapshot, readLimits } from "../src/admission.ts";
+import { decide, launchCycle } from "../src/admission-core.ts";
+import { claim, withAdmissionLock } from "../src/claims.ts";
+import {
+  atomicWrite,
+  initialActivity,
+  privateDirectory,
+  readRun,
+  runPaths,
+  updateActivity,
+  writeRun,
+  type RunRecord,
+} from "../src/records.ts";
+
+it("builds the model's nested reservation, parking, takeover, and ancestry shapes from disk", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pirs-nesting-"));
+  const previous = process.env.PI_SUBAGENTS_STATE_DIR;
+  process.env.PI_SUBAGENTS_STATE_DIR = root;
+  try {
+    const make = async (
+      n: number,
+      parent: RunRecord | null,
+      checkout = "/checkout",
+    ): Promise<RunRecord> => {
+      const id = n.toString(16).padStart(24, "0");
+      const paths = runPaths(join(root, "runs", id));
+      await privateDirectory(join(root, "runs", id));
+      const settings = { provider: "p", model: "test", thinking: "off" as const };
+      const run: RunRecord = {
+        version: 1,
+        id,
+        label: `run-${n}`,
+        taskPath: join(root, "task"),
+        cwd: checkout,
+        checkoutRoot: checkout,
+        access: "write",
+        requested: settings,
+        effective: settings,
+        background: true,
+        continueFrom: null,
+        parentSessionId: parent?.id ?? "unmanaged",
+        rootParentSessionId: "unmanaged",
+        parentRunId: parent?.id ?? null,
+        depth: parent ? parent.depth + 1 : 1,
+        rex: null,
+        location: null,
+        paths,
+        lifecycle: "running",
+        process: { state: "live", pid: null },
+        waiting: null,
+        queue: null,
+        sessionFile: null,
+        diagnostic: null,
+        createdAt: n,
+        updatedAt: n,
+        loadedAt: n,
+        finishedAt: null,
+        activity: initialActivity(),
+      };
+      await writeRun(run);
+      return run;
+    };
+    const a = await make(1, null),
+      b = await make(2, a),
+      c = await make(3, b),
+      outside = await make(4, null);
+    c.access = "read";
+    await writeRun(c);
+    for (const dir of ["queue", "reservations"]) await privateDirectory(join(root, dir));
+    await atomicWrite(join(root, "reservations", `${a.id}.json`), {
+      id: a.id,
+      members: [a, b].map((r) => ({
+        runId: r.id,
+        access: r.access,
+        checkout: r.checkoutRoot,
+        provider: "p",
+      })),
+    });
+    await atomicWrite(join(root, "queue", `0-${outside.id}.json`), { runId: outside.id, seq: 0 });
+    await atomicWrite(join(root, "queue", `1-${c.id}.json`), { runId: c.id, seq: 1 });
+    await updateActivity(a.id, (activity) => {
+      activity.parked = "foreground";
+    });
+    await updateActivity(b.id, (activity) => {
+      activity.parked = "foreground";
+      activity.tools = [{ id: "launch", name: "subagent" }];
+    });
+    // Lifecycle observations can be stale in a different process; they cannot clear activity.
+    await writeRun(b);
+    expect((await readRun(b.id)).activity?.parked).toBe("foreground");
+    let snapshot = await withAdmissionLock(() =>
+      admissionSnapshot({ active: 1, depth: 3, providers: {} }),
+    );
+    expect(snapshot.runs.find((r) => r.id === b.id)).toMatchObject({
+      parent: a.id,
+      reservation: a.id,
+      state: "parked",
+    });
+    expect(decide(snapshot).admit).toEqual({ id: c.id, reservation: a.id });
+    expect(launchCycle(snapshot, c.id)).toBeNull();
+    await updateActivity(b.id, (activity) => {
+      activity.tools.push({ id: "shell", name: "bash" });
+    });
+    snapshot = await admissionSnapshot(await readLimits());
+    expect(decide(snapshot).tickets.find((r) => r.id === c.id)).toMatchObject({
+      reason: "checkout",
+      blockers: [b.id],
+    });
+    expect(launchCycle(snapshot, c.id)).toBeNull();
+    await claim(b.paths.claim, "taken_over");
+    snapshot = await admissionSnapshot(await readLimits());
+    expect(snapshot.runs.find((r) => r.id === b.id)).toMatchObject({
+      state: "taken",
+      detached: true,
+    });
+    expect(snapshot.runs.find((r) => r.id === c.id)?.state).toBe("exited");
+    await updateActivity(a.id, (activity) => {
+      activity.readyToWake = true;
+    });
+    snapshot = await admissionSnapshot({ active: 1, depth: 3, providers: {} });
+    expect(decide(snapshot).wakes).toEqual([{ id: a.id, hasSlot: false }]);
+    expect(decide(snapshot).admit).toBeNull();
+  } finally {
+    if (previous === undefined) delete process.env.PI_SUBAGENTS_STATE_DIR;
+    else process.env.PI_SUBAGENTS_STATE_DIR = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});

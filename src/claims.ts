@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomBytes } from "node:crypto";
 import { link, open, readFile, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -43,10 +44,16 @@ export async function claim(path: string, winner: Claim): Promise<Claim> {
     });
   }
 }
+const admissionScope = new AsyncLocalStorage<boolean>();
 export async function withAdmissionLock<T>(body: () => Promise<T>): Promise<T> {
+  if (admissionScope.getStore()) return body();
   await privateDirectory(stateDir());
   const path = join(stateDir(), "lock");
-  return withLock(path, body, () => recoverStaleLock(path));
+  return withLock(
+    path,
+    () => admissionScope.run(true, body),
+    () => recoverStaleLock(path),
+  );
 }
 export async function withRunLock<T>(
   path: string,

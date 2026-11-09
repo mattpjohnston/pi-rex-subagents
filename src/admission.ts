@@ -5,6 +5,9 @@ import { Type, type Static } from "typebox";
 import {
   contains,
   decide,
+  launchCycle,
+  overlaps,
+  reservationFor,
   type AdmissionRun,
   type Limits,
   type Snapshot,
@@ -18,6 +21,8 @@ import {
   privateDirectory,
   readJson,
   readRun,
+  listRuns,
+  updateActivity,
   stateDir,
   writeRun,
   RunRecord,
@@ -125,47 +130,79 @@ async function collect(): Promise<{ reservations: Reservation[]; checked: number
     checked,
   };
 }
-async function pass(
+/** Called under admission. Keep exited ancestry in the graph even after membership ends. */
+export async function admissionSnapshot(
   limits: Limits,
-): Promise<{ snapshot: Snapshot; reservations: Reservation[]; checked: number }> {
-  const { reservations, checked } = await collect();
+  savedReservations?: Reservation[],
+): Promise<Snapshot> {
+  const reservations = savedReservations ?? (await readReservations());
+  const records = await listRuns();
+  const tickets = await readTickets();
   const runs: AdmissionRun[] = [];
-  for (const reservation of reservations)
-    for (const member of reservation.members) {
-      const record = await readRun(member.runId);
-      runs.push({
-        id: member.runId,
-        parent: record.parentRunId,
-        access: member.access,
-        checkout: member.checkout,
-        provider: member.provider,
-        state: (await readClaim(record.paths.claim)) === "taken_over" ? "taken" : "running",
-        reservation: reservation.id,
-        ticket: null,
-        detached: false,
-        readyToWake: false,
-      });
-    }
-  for (const ticket of await readTickets()) {
-    const record = await readRun(ticket.runId);
-    if (runs.some((run) => run.id === ticket.runId) || (await readClaim(record.paths.claim))) {
-      await unlink(pathForTicket(ticket));
-      continue;
-    }
+  for (const record of records) {
+    const reservation = reservations.find((r) => r.members.some((m) => m.runId === record.id));
+    const ticket = tickets.find((t) => t.runId === record.id);
+    const winner = await readClaim(record.paths.claim);
+    const claimed = await claimedAncestor(record);
+    if (ticket && (winner || claimed)) await removeTicket(record.id);
     runs.push({
       id: record.id,
       parent: record.parentRunId,
       access: record.access,
       checkout: record.checkoutRoot,
       provider: record.effective.provider,
-      state: "queued",
-      reservation: null,
-      ticket: ticket.seq,
-      detached: false,
-      readyToWake: false,
+      state: reservation
+        ? winner === "taken_over"
+          ? "taken"
+          : record.activity?.parked
+            ? "parked"
+            : "running"
+        : ticket && !winner && !claimed
+          ? "queued"
+          : "exited",
+      reservation: reservation?.id ?? null,
+      ticket: ticket?.seq ?? null,
+      detached: winner === "taken_over",
+      readyToWake: record.activity?.readyToWake ?? false,
     });
   }
   const snapshot = { runs, limits };
+  for (const run of runs) {
+    if (run.state !== "queued") continue;
+    const reservation = reservationFor(snapshot, run);
+    if (!reservation) continue;
+    run.joining = [];
+    let parent = run.parent;
+    while (parent) {
+      const ancestor = runs.find((r) => r.id === parent);
+      const record = records.find((r) => r.id === parent);
+      if (!ancestor || !record) break;
+      if (
+        ancestor.reservation === reservation &&
+        overlaps(ancestor.checkout, run.checkout) &&
+        record.activity?.tools.some((tool) => tool.name !== "subagent")
+      )
+        run.joining.push(parent);
+      parent = ancestor.parent;
+    }
+  }
+  return snapshot;
+}
+export async function claimedAncestor(run: RunRecord): Promise<string | null> {
+  let parent = run.parentRunId;
+  while (parent) {
+    const record = await readRun(parent);
+    if (await readClaim(record.paths.claim)) return parent;
+    parent = record.parentRunId;
+  }
+  return null;
+}
+async function pass(
+  limits: Limits,
+): Promise<{ snapshot: Snapshot; reservations: Reservation[]; checked: number }> {
+  const { reservations, checked } = await collect();
+  const snapshot = await admissionSnapshot(limits, reservations);
+  const runs = snapshot.runs;
   const admitted = decide(snapshot).admit;
   if (admitted) {
     const run = runs.find((run) => run.id === admitted.id);
@@ -207,6 +244,8 @@ export async function admit(
     await privateDirectory(join(stateDir(), "queue"));
     await privateDirectory(join(stateDir(), "reservations"));
     if ((await readClaim(run.paths.claim)) || signal?.aborted) return;
+    const ancestor = await claimedAncestor(run);
+    if (ancestor) throw new Error(`Launch refused: ancestor ${ancestor} already has a claim`);
     if (
       (await readTickets()).some((ticket) => ticket.runId === run.id) ||
       (await readReservations()).some((r) => r.members.some((m) => m.runId === run.id))
@@ -224,13 +263,18 @@ export async function admit(
     }
     await atomicWrite(counter, seq + 1);
     await atomicWrite(pathForTicket({ runId: run.id, seq }), { runId: run.id, seq });
+    const cycle = launchCycle(await admissionSnapshot(await readLimits()), run.id);
+    if (cycle) {
+      await removeTicket(run.id);
+      throw new Error(`Nested launch refused: wait cycle ${cycle.join(" -> ")}`);
+    }
   });
   while (true) {
     const measured = await withAdmissionLock(async () => {
       const started = performance.now();
       const traced = await traceRex(async () => {
         const limits = await readLimits();
-        if (signal?.aborted || (await readClaim(run.paths.claim))) {
+        if (signal?.aborted || (await readClaim(run.paths.claim)) || (await claimedAncestor(run))) {
           await removeTicket(run.id);
           if (run.queue) {
             run.queue = null;
@@ -279,14 +323,65 @@ export async function admit(
   }
 }
 
-export async function writerOnPath(target: string): Promise<RunRecord | null> {
+export async function writerOnPath(target: string, memberId?: string): Promise<RunRecord | null> {
   return withAdmissionLock(async () => {
     await readLimits();
     for (const reservation of (await collect()).reservations)
       for (const member of reservation.members) {
-        if (member.access === "write" && contains(member.checkout, target))
+        if (member.runId === memberId) continue;
+        if (
+          contains(member.checkout, target) &&
+          (member.access === "write" || (memberId && (await isDescendant(member.runId, memberId))))
+        )
           return readRun(member.runId);
       }
     return null;
   });
+}
+
+export async function isDescendant(id: string, ancestor: string): Promise<boolean> {
+  let parent = (await readRun(id)).parentRunId;
+  while (parent) {
+    if (parent === ancestor) return true;
+    parent = (await readRun(parent)).parentRunId;
+  }
+  return false;
+}
+export async function park(
+  id: string,
+  reason: "foreground" | "settled",
+  callId?: string,
+): Promise<void> {
+  await updateActivity(id, (activity) => {
+    activity.parked = reason;
+    activity.readyToWake = false;
+    if (callId && !activity.foreground.includes(callId)) activity.foreground.push(callId);
+  });
+}
+/** Return to model work is a separate admission, before every newer launch ticket. */
+export async function wake(id: string, callId?: string): Promise<void> {
+  await updateActivity(id, (activity) => {
+    if (callId) activity.foreground = activity.foreground.filter((call) => call !== callId);
+    if (activity.parked && !activity.foreground.length) activity.readyToWake = true;
+  });
+  while (true) {
+    const done = await withAdmissionLock(async () => {
+      const run = await readRun(id);
+      if (
+        !run.activity?.parked ||
+        run.activity.foreground.length ||
+        (await readClaim(run.paths.claim))
+      )
+        return true;
+      const snapshot = await admissionSnapshot(await readLimits(), (await collect()).reservations);
+      if (!decide(snapshot).wakes.find((r) => r.id === id)?.hasSlot) return false;
+      await updateActivity(id, (activity) => {
+        activity.parked = null;
+        activity.readyToWake = false;
+      });
+      return true;
+    });
+    if (done) return;
+    await delay(200);
+  }
 }

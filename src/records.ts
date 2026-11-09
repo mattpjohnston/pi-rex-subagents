@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Type, type Static, type TSchema } from "typebox";
 import { Check } from "typebox/value";
+import { withAdmissionLock } from "./claims.ts";
 
 const object = { additionalProperties: false };
 const text = Type.String({ minLength: 1 });
@@ -74,6 +75,22 @@ export const QueueState = Type.Object(
   object,
 );
 export type QueueState = Static<typeof QueueState>;
+export const Activity = Type.Object(
+  {
+    parked: Type.Union([Type.Literal("foreground"), Type.Literal("settled"), Type.Null()]),
+    readyToWake: Type.Boolean(),
+    tools: Type.Array(Type.Object({ id: Type.String(), name: Type.String() }, object)),
+    foreground: Type.Array(Type.String()),
+  },
+  object,
+);
+export type Activity = Static<typeof Activity>;
+export const initialActivity = (): Activity => ({
+  parked: null,
+  readyToWake: false,
+  tools: [],
+  foreground: [],
+});
 export const RunRecord = Type.Object(
   {
     version: Type.Literal(1),
@@ -91,6 +108,8 @@ export const RunRecord = Type.Object(
       Type.Null(),
     ]),
     parentSessionId: text,
+    rootParentSessionId: Type.Optional(text),
+    activity: Type.Optional(Activity),
     parentRunId: nullableText,
     depth: Type.Integer({ minimum: 0 }),
     rex: Type.Union([Location, Type.Null()]),
@@ -230,8 +249,31 @@ export async function readRun(id: string): Promise<RunRecord> {
   return record;
 }
 export async function writeRun(run: RunRecord): Promise<void> {
-  run.updatedAt = Date.now();
-  await atomicWrite(run.paths.run, parse(RunRecord, run));
+  await withAdmissionLock(async () => {
+    // The reporter owns activity; a parent's older lifecycle observation must not erase it.
+    const saved = await readRun(run.id).catch((error: unknown) => {
+      if (!isMissing(error)) throw error;
+      return null;
+    });
+    if (saved?.activity) run.activity = saved.activity;
+    run.updatedAt = Date.now();
+    await atomicWrite(run.paths.run, parse(RunRecord, run));
+  });
+}
+/** Admission lock serializes reporter activity with lifecycle observations from other processes. */
+export async function updateActivity(
+  id: string,
+  update: (activity: Activity, run: RunRecord) => void,
+): Promise<RunRecord> {
+  return withAdmissionLock(async () => {
+    const run = await readRun(id);
+    const activity = run.activity ?? initialActivity();
+    update(activity, run);
+    run.activity = activity;
+    run.updatedAt = Date.now();
+    await atomicWrite(run.paths.run, parse(RunRecord, run));
+    return run;
+  });
 }
 export async function readResult(run: RunRecord): Promise<ResultFile> {
   const result = parse(ResultFile, await readJson(run.paths.result));

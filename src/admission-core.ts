@@ -10,6 +10,7 @@ export interface AdmissionRun {
   ticket: number | null;
   detached: boolean;
   readyToWake: boolean;
+  joining?: string[];
 }
 export interface Limits {
   active: number;
@@ -97,7 +98,9 @@ export function decide(snapshot: Snapshot): AdmissionDecision {
   const older: AdmissionRun[] = [];
   let capacityHeld = false;
   for (const run of tickets(snapshot)) {
-    const blocked = blockers(snapshot, run, older);
+    const blocked = [
+      ...new Set([...blockers(snapshot, run, older), ...(run.joining ?? [])]),
+    ].sort();
     older.push(run);
     const reason = blocked.length
       ? "checkout"
