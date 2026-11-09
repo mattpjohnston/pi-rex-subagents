@@ -1,29 +1,25 @@
 # pi-rex-subagents
 
-A [Pi](https://pi.dev) extension that delegates work to fresh Pi sessions running in [Rex](https://www.superlogical.com/rex) terminal tabs. Each child is a normal interactive Pi that you can watch, steer, or take over. The parent gets back a validated result, not a scrape of the terminal.
+A [Pi](https://pi.dev) extension that runs subagents as separate Pi sessions in [Rex](https://www.superlogical.com/rex) tabs. You can open a subagent's tab to watch it, type to steer it, or take it over and keep working in it yourself. When it finishes, it writes its final answer to a file and the parent reads that file.
 
-The extension owns launch options, admission, the child lifecycle, checkout coordination, and result delivery. Pi owns the child conversation and tools. Rex owns terminals and navigation. The parent model and its instructions own the workflow: which tasks to run, with which models, in which worktrees, and how to review the results.
+## What it does
 
-## Status
+- Runs several subagents at once. A call can wait for its subagent to finish, or return straight away and deliver the result later.
+- Stops two subagents from editing the same repository at once, across every Pi on your machine. Read-only subagents can share a repository.
+- Caps how many subagents run at once, machine-wide, with an optional cap per provider.
+- Offers a read-only mode with file tools and a locked-down `git` tool, and an "inspect" mode that keeps the shell but reports any files that changed.
+- Lets subagents start their own subagents, two levels deep by default.
+- Gives the parent a `subagent_control` tool to list, cancel, and message its subagents.
+- Closes a finished subagent's tab a minute after it exits, unless you're looking at it or have pinned it.
+- Includes a Rex key binding that jumps to the oldest subagent waiting for you.
 
-It covers:
-
-- Several children at once, foreground or background.
-- Machine-wide admission. Readers share a checkout, a writer gets it alone, and an active-children ceiling applies across every parent on the machine.
-- `read` children restricted to file tools and an allowlisted `git_read`.
-- `inspect` children that keep a shell and MCP but report afterwards whether the checkout changed during the run.
-- Background results pushed into the parent session, coalesced, and reconciled after reloads and crashes.
-- A `subagent_control` tool so the parent can list runs, cancel a stuck child, and send acknowledged stop or hold orders without typing into its terminal.
-- Nested `write` and `inspect` children, which share their parent's checkout reservation, to a configured depth (default 2).
-- A Rex action that jumps to the oldest child waiting for you, and a desktop notice when a child starts waiting.
-
-See [docs/design.md](docs/design.md) for the full design.
+[docs/design.md](docs/design.md) explains how it works.
 
 ## Requirements
 
-- Pi 1.5.0 or later, with the provider credentials your children will use already stored by Pi.
-- A local Rex server. The parent Pi must run inside a Rex terminal, because children open as tabs in the parent's Rex session.
-- Git, if you want checkout identity and `git_read` to understand repositories.
+- Pi 1.5.0 or later, logged in to the providers your subagents will use.
+- Rex running on the same machine. Start the parent Pi inside a Rex tab, because subagents open as tabs in the same Rex session.
+- Git, for the repository checks and the read-only `git` tool.
 
 ## Install
 
@@ -31,123 +27,117 @@ See [docs/design.md](docs/design.md) for the full design.
 pi install npm:pi-rex-subagents
 ```
 
-Or straight from GitHub:
+Or from GitHub:
 
 ```sh
 pi install git:github.com/mattpjohnston/pi-rex-subagents
 ```
 
-To try it for one session without installing, add `-e npm:pi-rex-subagents` to `pi`.
+To try it for one session, run `pi -e npm:pi-rex-subagents`.
 
-The extension registers a tool named `subagent`. Remove or disable any other extension that registers the same tool name before you install this one.
+This extension adds a tool called `subagent`. If another extension you use also adds one, remove that extension first.
 
-## Use
+## Usage
 
-Ask the parent to delegate. It calls `subagent` with:
+Ask Pi to hand work to a subagent. It calls the `subagent` tool with these inputs:
 
-| Input                           | Meaning                                                                                    |
-| ------------------------------- | ------------------------------------------------------------------------------------------ |
-| `task`                          | The complete task. The child does not see the parent's conversation.                       |
-| `label`                         | Optional tab name. It never selects policy.                                                |
-| `cwd`                           | Working directory. Defaults to the parent's.                                               |
-| `access`                        | `read`, `inspect`, or `write` (default). See below.                                        |
-| `background`                    | `true` returns a run ID at once. The result arrives later as a message.                    |
-| `continueFrom`                  | Run ID of an exited earlier run. The child starts from a fork of that run's saved session. |
-| `provider`, `model`, `thinking` | Overrides. Omitted settings inherit the parent's.                                          |
+| Input                           | Meaning                                                                                        |
+| ------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `task`                          | The full task. The subagent can't see the parent's conversation, so the task must stand alone. |
+| `label`                         | Name for the tab.                                                                              |
+| `cwd`                           | Working directory. Defaults to the parent's.                                                   |
+| `access`                        | `write` (default), `read`, or `inspect`. See below.                                            |
+| `background`                    | If `true`, the call returns at once and the result arrives later as a message.                 |
+| `continueFrom`                  | ID of an earlier, finished run. The new subagent starts with a copy of that conversation.      |
+| `provider`, `model`, `thinking` | Model settings. Anything you leave out is copied from the parent.                              |
 
-Each child opens as a background tab in your Rex session, named after its label, without taking focus. Open the tab to watch it. Enter steers the child and Escape interrupts it, as in any Pi session.
+Each subagent opens in a new tab in your Rex session, without switching to it. Open the tab to watch. Press Enter to send it a message and Escape to interrupt it, as in any Pi session.
 
-A foreground call blocks until the child finishes, and blocks steering of the parent until then. Several calls in one message run in parallel. Use background for long work, or for work you may want to talk to the parent about while it runs.
+A call that isn't `background` waits for the subagent to finish, and you can't steer the parent until it does. Several calls in one message run at the same time. Use `background` for long tasks, or when you want to keep talking to the parent.
 
-Ask children for a short final report, and have bulk output written to a file the report names. Each result the parent sees is capped at 50 KB or 2000 lines, with the path to the child's full session.
+Ask subagents for a short final report, and to put anything long in a file. The parent sees at most 50 KB or 2,000 lines of each result, plus the path to the full conversation.
 
 ### Access modes
 
-- **`write`** runs the normal Pi environment. It is admitted as a writer, alone on its checkout.
-- **`read`** has only `read`, `grep`, `find`, `ls`, and `git_read`. Extensions, MCP, and the shell are off, and the extension checks the callable tool set before the task starts. `git_read` runs a small set of Git subcommands with hardening against commands that a repository's own config could run. It is a tool restriction inside a trusted process, not an operating-system sandbox.
-- **`inspect`** runs the normal environment without the `edit` and `write` tools, so it keeps a shell and MCP. It is admitted as a reader. The extension fingerprints the checkout's contents before and after the run, and the result says `clean`, `changed` (with the paths), or `unknown`. This is a declaration checked afterwards, not enforcement.
+- `write` gets your normal Pi setup. Only one `write` subagent works in a repository at a time.
+- `read` gets `read`, `grep`, `find`, `ls`, and `git_read`, which runs read-only Git commands like `log`, `show`, and `diff`. It has no shell, extensions, or MCP servers. The extension checks the tool list before the task starts, and stops the subagent if anything else is available. This limits Pi's tools. It isn't an operating-system sandbox.
+- `inspect` gets your normal Pi setup minus the `edit` and `write` tools, so it still has a shell and MCP servers. It can share a repository with `read` subagents. The extension records every file before and after the run, and the result lists any that changed. Nothing stops an `inspect` subagent from writing files with the shell. You just find out afterwards.
 
 ### Commands
 
-- `/subagents` lists this parent's runs, waiting children first.
-- `/subagents all` lists live children of every parent on the machine.
-- `/subagents go <label>` switches Rex to the child's tab, wherever you have moved it.
-- `/subagents cancel <label|run-id>` cancels a queued or running background run.
-- `/subagents clear` closes the tabs of children that completed and exited, except kept ones.
-- `/subagents keep <label|run-id>` pins a child's tab so it is not closed automatically.
-- `/subagents dismiss <label|run-id>` closes one exited child's tab.
-- `/subagent-takeover`, typed in a child's tab, makes you the owner of that child. It stops reporting to the parent and does not exit when its work settles.
+- `/subagents` lists this session's subagents, with any waiting for you at the top.
+- `/subagents all` lists running subagents from every Pi session.
+- `/subagents go <label>` switches Rex to that subagent's tab.
+- `/subagents go next` switches to the subagent that has waited longest for you.
+- `/subagents cancel <label>` cancels a background subagent.
+- `/subagents keep <label>` stops a tab from closing automatically.
+- `/subagents clear` closes the tabs of finished subagents.
+- `/subagents dismiss <label>` closes one finished subagent's tab.
+- `/subagent-takeover`, typed in a subagent's own tab, makes the session yours. It stops reporting to the parent and won't exit when it's done.
 
-Closing a child's tab never deletes its result, session, or records.
+Closing a tab doesn't delete anything. The conversation, result, and records stay on disk.
 
-When a child stops for a human, for example on a dialog or Pi's project-trust prompt, the parent shows a notice naming the child and the `/subagents go` command. The child also writes one OSC 9 notification to its own terminal, once per wait. Rex may show that as a banner. It is a notification, not a status record.
+When a subagent needs you, for example to answer a dialog or Pi's trust prompt, the parent shows a notice with the `/subagents go` command for it. The subagent also sends a desktop notification.
 
-`/subagents go next` runs `rex/next_waiting.lua`, which selects the oldest waiting child of any parent. Load that file from Rex's `init.lua` to bind the same action to a key. This extension does not edit `init.lua`.
+### Rex key bindings
+
+Add these to Rex's `init.lua`, then run `rex config reload`:
 
 ```lua
-dofile("/absolute/path/to/pi-rex-subagents/rex/next_waiting.lua")
+dofile("/path/to/pi-rex-subagents/rex/next_waiting.lua")
 rex.bind("ctrl+shift+n", "subagents_next_waiting")
-dofile("/absolute/path/to/pi-rex-subagents/rex/keep.lua")
+dofile("/path/to/pi-rex-subagents/rex/keep.lua")
 rex.bind("ctrl+shift+k", "subagents_keep")
 ```
 
-Run `rex config reload` after saving. The action name has no dot: Rex reserves dotted names for clients and block types.
-
-### Parent controls
-
-The parent model has one `subagent_control` tool:
-
-| Operation | Inputs          | Use                                                                                                                                                                                                |
-| --------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `list`    | No other inputs | This parent's runs, bounded to 30, with access, state, queue reason, checkout, last Rex status, human wait, and elapsed time.                                                                      |
-| `cancel`  | `runId`         | Cancel queued or live work before replacing a stuck agent. A taken-over child is refused. A process hanging after its result's 10-second shutdown grace can be closed without changing the answer. |
-| `message` | `runId`, `text` | Send a correction or stop/hold order, as steering during work or a prompt while idle. Not for chaining new work; launch another child for that.                                                    |
-
-`message` returns `accepted` only after the child acknowledges it under the same lock as settlement and takeover. It returns `refused` with a reason, or `unacknowledged` after 10 seconds. An unacknowledged message may still be accepted later; it is not proof of delivery or refusal. The message ID appears in the child's saved user message, and settlement waits for accepted messages to be consumed before publishing. Messages never answer an open dialog. A takeover outcome lists accepted messages that were not consumed when the human took ownership.
-
-Write and inspect children get `subagent` and `subagent_control` below the depth limit. Read children never get them. Inspect children default nested launches to inspect and cannot launch writers. Members cannot edit/write their checkout while a live descendant shares their reservation; bash is not blocked.
+`subagents_next_waiting` jumps to the subagent that has waited longest for you, in any session. `subagents_keep` pins or unpins the tab you're in.
 
 ### Finished tabs
 
-A child that completes closes its own tab 60 seconds after it exits. The tab never closes while it is the active tab of its session, so one you are reading stays open, and it closes a few seconds after you switch away. Failed, cancelled, incomplete, and taken-over children keep their tabs; `/subagents clear` or `/subagents dismiss` closes those. A closed tab loses nothing: the transcript, result, and records stay on disk, and `continueFrom` still works.
+When a subagent completes, its tab closes 60 seconds after the process exits. It stays open while it's the selected tab in its session, and closes about 5 seconds after you switch away.
 
-To keep a tab to come back to, pin it. Any tab whose label no longer matches the child's launch label is kept, so you can:
+To keep a tab, pin it. Press the `subagents_keep` key in the tab, which adds `📌` to its name, or run `/subagents keep <label>` in the parent. Renaming the tab also keeps it. `/subagents clear` skips pinned tabs, and `/subagents dismiss` closes them.
 
-- press a key bound to the `subagents_keep` Rex action while you are in the tab, which adds 📌 to its label (press it again to unpin);
-- run `/subagents keep <label>` in the parent; or
-- rename the tab yourself.
+Tabs of subagents that failed, were cancelled, or that you took over don't close automatically.
 
-A kept tab is skipped by automatic closing and by `/subagents clear`. `/subagents dismiss` still closes it.
+### Parent controls
 
-Set `closeCompletedAfter` in `limits.json` to change the delay in seconds, or to `false` to keep every tab.
+The parent model can call `subagent_control`:
 
-### Limits
+- `list` shows its subagents and what each is doing.
+- `cancel` stops one. It won't cancel a subagent you've taken over.
+- `message` sends one a short instruction, such as "stop" or "wait before committing". The tool reports `accepted`, `refused`, or `unacknowledged` after 10 seconds. A subagent never finishes with an accepted message it hasn't read yet.
 
-Admission reads `limits.json` in the state directory on every decision, so edits apply to the next launch:
+### Settings
+
+Settings live in `~/.pi/agent/subagents/limits.json`. The extension reads it before each launch, so changes apply straight away.
 
 ```json
 { "active": 4, "depth": 2, "providers": { "openrouter": 2 }, "closeCompletedAfter": 60 }
 ```
 
-- `active` is the most live children across every parent on the machine. The default is 4.
-- `providers` optionally caps children per provider.
-- `depth` counts layers below the unmanaged parent. The default is 2; 1 disables nesting. Parked children retain reservations but release capacity while waiting for descendants, then reacquire a slot before model work resumes. Human actions count immediately, even over a ceiling.
+- `active` is how many subagents can run at once across your machine. The default is 4.
+- `providers` caps subagents per provider.
+- `depth` is how many levels of subagents can exist below a session you started. The default is 2. Set it to 1 to stop subagents starting their own.
+- `closeCompletedAfter` is how many seconds a finished tab stays open. Set it to `false` to keep tabs.
 
-A missing file means the defaults. A malformed file blocks admission with an error naming the file.
+If the file is missing, the defaults apply. If it's invalid, launches stop with an error that names the file.
 
-The state directory is `subagents/` in Pi's agent directory (`~/.pi/agent/subagents` by default). Override it with `PI_SUBAGENTS_STATE_DIR`. Find `pi` and `rex` somewhere other than `PATH` with `PI_SUBAGENTS_PI` and `PI_SUBAGENTS_REX`.
+To keep state somewhere else, set `PI_SUBAGENTS_STATE_DIR`. If `pi` or `rex` isn't on your `PATH`, set `PI_SUBAGENTS_PI` or `PI_SUBAGENTS_REX`.
 
 ### Project trust
 
-Children use Pi's normal project-trust decisions for their working directory. The extension never approves a folder. If you keep worktrees under one root, choose Pi's "Trust parent folder" once for that root, and later worktrees under it will not prompt.
+Subagents follow Pi's usual trust prompts for their working directory, and the extension never answers one for you. If you keep worktrees in one folder, choose Pi's "Trust parent folder" once for that folder, and new worktrees inside it won't prompt.
 
-## What it does not do
+## Limitations
 
-It does not manage worktrees, retry tasks, route work, or close terminals on its own. Checkout coordination covers children managed by this extension on this machine. It does not lock out the parent's own shell commands, other tools, or other machines, and the active ceiling is not a spending cap.
+- It doesn't create worktrees, retry failed tasks, or choose models. The parent decides those.
+- The repository rules apply only to subagents started by this extension on this machine. They don't stop the parent's own shell commands or anything else editing the files.
+- The cap on running subagents isn't a spending limit.
 
 ## Development
 
-See [docs/development.md](docs/development.md) for the checks, the real Pi and Rex acceptance harness, and the testing hooks.
+[docs/development.md](docs/development.md) covers the checks, the end-to-end tests against real Pi and Rex, and the test-only settings.
 
 ## License
 
