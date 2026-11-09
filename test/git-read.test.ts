@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, lstat, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
@@ -210,6 +210,8 @@ it("does not run a clean filter, smudge filter, diff driver, external diff, fsmo
   execFileSync("cp", [join(hookRoot, "hook.sh"), join(hooks, "post-index-change")]);
   execFileSync("chmod", ["+x", join(hooks, "post-index-change")]);
   execFileSync("git", ["-C", hookRoot, "config", "core.hooksPath", hooks]);
+  // Git skips a same-tick stat refresh; force a real index refresh for the positive control.
+  await utimes(join(hookRoot, "f"), 1, 1);
   execFileSync("git", ["-C", hookRoot, "status"]);
   expect(await readFile(hookMarker, "utf8")).toMatch(/ran/);
   await rm(hookMarker);
