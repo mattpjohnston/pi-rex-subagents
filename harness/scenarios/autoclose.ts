@@ -5,10 +5,10 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { RunRecord } from "../../src/records.ts";
 import { observeProcess } from "../../src/rex.ts";
 import { VIEW_SETTLE_MS } from "../../src/terminals.ts";
-import { current, start, until } from "../lib/phase-one.ts";
+import { current, send, start, until } from "../lib/phase-one.ts";
 import { directory, finished, hold, release } from "../lib/phase-two.ts";
 import { object, success } from "../lib/rex.ts";
-import { withRun } from "../lib/run.ts";
+import { repo, withRun } from "../lib/run.ts";
 
 const GRACE_S = 4;
 
@@ -94,5 +94,34 @@ export default async function autoclose(): Promise<void> {
     console.log(
       "autoclose viewed: PASS; stayed open while viewed past the grace period, closed after leaving",
     );
+
+    const keptLaunch = await start(run, {
+      label: "auto-kept",
+      cwd: await directory(run, "kept"),
+      task: "Call harness_hold once and wait before replying.",
+    });
+    const keptHeld = await hold(run, await keptLaunch.record());
+    assert(keptHeld.rex);
+    success(
+      await run.rex.command(
+        [
+          "do",
+          "-s",
+          keptHeld.rex.sessionId,
+          "-b",
+          keptHeld.rex.blockId,
+          join(repo, "rex", "keep.lua"),
+          "--json",
+        ],
+        false,
+      ),
+    );
+    await release(keptHeld);
+    const kept = await finished(run, keptHeld);
+    await delay((GRACE_S * 1000 + VIEW_SETTLE_MS) * 2);
+    assert(await tabOpen(kept), "a pinned tab outlives the grace period");
+    await send(run, keptLaunch.parent, `/subagents dismiss ${kept.id}`);
+    await until("dismiss still closes a pinned tab", async () => !(await tabOpen(kept)), 30_000);
+    console.log("autoclose kept: PASS; pinned tab survived the grace period, dismiss closed it");
   });
 }

@@ -73,7 +73,8 @@ Ask children for a short final report, and have bulk output written to a file th
 - `/subagents all` lists live children of every parent on the machine.
 - `/subagents go <label>` switches Rex to the child's tab, wherever you have moved it.
 - `/subagents cancel <label|run-id>` cancels a queued or running background run.
-- `/subagents clear` closes the tabs of children that completed and exited.
+- `/subagents clear` closes the tabs of children that completed and exited, except kept ones.
+- `/subagents keep <label|run-id>` pins a child's tab so it is not closed automatically.
 - `/subagents dismiss <label|run-id>` closes one exited child's tab.
 - `/subagent-takeover`, typed in a child's tab, makes you the owner of that child. It stops reporting to the parent and does not exit when its work settles.
 
@@ -86,6 +87,8 @@ When a child stops for a human, for example on a dialog or Pi's project-trust pr
 ```lua
 dofile("/absolute/path/to/pi-rex-subagents/rex/next_waiting.lua")
 rex.bind("ctrl+shift+n", "subagents_next_waiting")
+dofile("/absolute/path/to/pi-rex-subagents/rex/keep.lua")
+rex.bind("ctrl+shift+k", "subagents_keep")
 ```
 
 Run `rex config reload` after saving. The action name has no dot: Rex reserves dotted names for clients and block types.
@@ -107,6 +110,14 @@ Write and inspect children get `subagent` and `subagent_control` below the depth
 ### Finished tabs
 
 A child that completes closes its own tab 60 seconds after it exits. The tab never closes while it is the active tab of its session, so one you are reading stays open, and it closes a few seconds after you switch away. Failed, cancelled, incomplete, and taken-over children keep their tabs; `/subagents clear` or `/subagents dismiss` closes those. A closed tab loses nothing: the transcript, result, and records stay on disk, and `continueFrom` still works.
+
+To keep a tab to come back to, pin it. Any tab whose label no longer matches the child's launch label is kept, so you can:
+
+- press a key bound to the `subagents_keep` Rex action while you are in the tab, which adds 📌 to its label (press it again to unpin);
+- run `/subagents keep <label>` in the parent; or
+- rename the tab yourself.
+
+A kept tab is skipped by automatic closing and by `/subagents clear`. `/subagents dismiss` still closes it.
 
 Set `closeCompletedAfter` in `limits.json` to change the delay in seconds, or to `false` to keep every tab.
 

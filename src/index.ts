@@ -29,7 +29,7 @@ import {
 } from "./delivery.ts";
 import { claimRuntime } from "./load-guard.ts";
 import { workingDirectory } from "./settings.ts";
-import { clearEligible, closeDecision, dismiss, viewing } from "./terminals.ts";
+import { clearEligible, closeDecision, dismiss, keep, readTabState } from "./terminals.ts";
 import { registerReporter } from "./reporter.ts";
 import {
   errorText,
@@ -373,7 +373,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       closing.set(run.id, state);
       const location = run.location ?? run.rex;
       if (!location) continue;
-      const looking = await viewing(location);
+      const looking = (await readTabState(location, run.label)).viewing;
       if (looking) state.lastViewedAt = now;
       if (closeDecision({ ...state, viewing: looking, now, graceMs }) === "close") {
         await dismiss(run);
@@ -452,7 +452,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   });
   pi.registerCommand("subagents", {
     description:
-      "List this parent's runs; all lists every live child; go <label> selects its tab; go next selects the oldest wait across parents; cancel <label|run-id> cancels a background run",
+      "List this parent's runs; all lists every live child; go <label> selects its tab; go next selects the oldest wait across parents; cancel <label|run-id> cancels a background run; keep <label|run-id> pins its tab open",
     handler: async (args, ctx) => {
       const all = treeOrder(await listRuns());
       const owned = ownedRuns(all, ctx.sessionManager.getSessionId());
@@ -479,6 +479,21 @@ export default async function (pi: ExtensionAPI): Promise<void> {
           "info",
         );
         await refresh(ctx);
+        return;
+      }
+      if (args.startsWith("keep ")) {
+        const target = args.slice("keep ".length).trim();
+        const matches = owned.filter((run) => run.id === target || run.label === target);
+        const selected = matches.length === 1 ? matches[0] : undefined;
+        if (!selected) {
+          ctx.ui.notify(
+            "Keep requires exactly one run label or ID belonging to this parent",
+            "error",
+          );
+          return;
+        }
+        await keep(selected);
+        ctx.ui.notify(`Keeping ${selected.label}'s tab; /subagents dismiss closes it`, "info");
         return;
       }
       if (args.startsWith("cancel ")) {
@@ -546,7 +561,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       }
       if (args && args !== "all") {
         ctx.ui.notify(
-          "Usage: /subagents [all | go <label|next> | cancel <label|run-id> | clear | dismiss <label|run-id>]",
+          "Usage: /subagents [all | go <label|next> | cancel <label|run-id> | keep <label|run-id> | clear | dismiss <label|run-id>]",
           "error",
         );
         return;

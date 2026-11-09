@@ -85,3 +85,22 @@ test("reads closeCompletedAfter from limits.json, defaulting to 60 s", async () 
   await writeFile(join(dir, "limits.json"), JSON.stringify({ closeCompletedAfter: "soon" }));
   await expect(closeCompletedAfterMs()).rejects.toThrow(/limits/);
 });
+
+test("a tab renamed away from its launch label is kept; the launch label is not", async () => {
+  const { tabState } = await import("../src/terminals.ts");
+  const where = { sessionId: "s", windowId: "w2", blockId: "b" };
+  const view = (label: string, active = "w1") => ({
+    active_window_id: active,
+    windows: [
+      { window_id: "w1", label: "parent" },
+      { window_id: "w2", label },
+    ],
+  });
+  expect(tabState(view("reviewer"), where, "reviewer")).toEqual({ viewing: false, kept: false });
+  expect(tabState(view("📌 reviewer"), where, "reviewer")).toEqual({ viewing: false, kept: true });
+  expect(tabState(view("my notes"), where, "reviewer")).toEqual({ viewing: false, kept: true });
+  expect(tabState(view("reviewer", "w2"), where, "reviewer")).toEqual({
+    viewing: true,
+    kept: false,
+  });
+});

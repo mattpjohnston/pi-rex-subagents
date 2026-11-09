@@ -10,4 +10,4 @@ First release.
 - `subagent_control` lists, cancels, and messages running children, with acknowledged delivery.
 - Nested children, two levels deep by default.
 - A Rex action that jumps to the oldest waiting child, and a desktop notice when a child waits.
-- Completed children close their tabs after a grace period, never while you are viewing them.
+- Completed children close their tabs after a grace period, never while you are viewing them. Pin a tab (the `subagents_keep` Rex action, `/subagents keep`, or renaming it) to keep it.
