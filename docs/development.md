@@ -39,6 +39,7 @@ Scenarios live in `harness/scenarios/`:
 | `recovery`          | Rex unreachable, a launch timeout, a parent crash, reloading with a taken-over subagent                       |
 | `terminals`         | Moving and splitting tabs, `/subagents clear` and `dismiss`                                                   |
 | `autoclose`         | Finished tabs close after the delay, stay while viewed, and stay when pinned                                  |
+| `retention`         | Old delivered runs deleted at startup; undelivered, taken-over, unresolved and recent runs kept               |
 | `read`, `readers`   | Read-only restrictions and `git_read` against hostile repositories, readers sharing a repository              |
 | `inspect`           | Inspect restrictions and change detection                                                                     |
 | `double-load`       | The extension loaded twice in one Pi registers once                                                           |

@@ -33,6 +33,7 @@ import { observeProcess } from "./rex.ts";
 const positive = Type.Integer({ minimum: 1 });
 const LimitsFile = Type.Object(
   {
+    keepRunsFor: Type.Optional(Type.Union([positive, Type.Literal(false)])),
     active: Type.Optional(positive),
     depth: Type.Optional(positive),
     providers: Type.Optional(Type.Record(Type.String({ minLength: 1 }), positive)),
@@ -60,6 +61,17 @@ export async function closeCompletedAfterMs(): Promise<number | null> {
     return value === false ? null : value * 1000;
   } catch (error) {
     if (isMissing(error)) return 60_000;
+    throw new Error(`Invalid limits ${path}: ${errorText(error)}`, { cause: error });
+  }
+}
+/** Days to retain ended, delivered runs; false keeps everything. */
+export async function keepRunsForMs(): Promise<number | null> {
+  const path = join(stateDir(), "limits.json");
+  try {
+    const value = parse(LimitsFile, await readJson(path)).keepRunsFor ?? 30;
+    return value === false ? null : value * 86_400_000;
+  } catch (error) {
+    if (isMissing(error)) return 30 * 86_400_000;
     throw new Error(`Invalid limits ${path}: ${errorText(error)}`, { cause: error });
   }
 }
@@ -109,6 +121,17 @@ async function readTickets(): Promise<Ticket[]> {
 export async function removeTicket(runId: string): Promise<void> {
   for (const ticket of await readTickets())
     if (ticket.runId === runId) await unlink(pathForTicket(ticket));
+}
+/** Caller holds admission and has confirmed this run can be deleted with an exited process. */
+export async function removeRunAdmission(runId: string): Promise<void> {
+  await removeTicket(runId);
+  for (const reservation of await readReservations()) {
+    const kept = reservation.members.filter((member) => member.runId !== runId);
+    if (kept.length === reservation.members.length) continue;
+    reservation.members = kept;
+    if (kept.length) await atomicWrite(pathForReservation(reservation.id), reservation);
+    else await unlink(pathForReservation(reservation.id));
+  }
 }
 export async function updateMemberProvider(runId: string, provider: string): Promise<void> {
   await withAdmissionLock(async () => {

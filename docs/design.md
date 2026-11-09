@@ -44,6 +44,20 @@ Each run has a private directory, `runs/<run-id>/`, in the state directory:
 
 A run goes from `admitting` to `starting` to `running`, then ends `completed`, `failed`, `aborted`, `incomplete`, `taken_over`, or `cancelled`. Process state is tracked separately as `live`, `exited`, `unresolved` (still alive after its shutdown grace), or `unknown` (Rex unreachable). A finished answer doesn't mean the process has exited.
 
+### Deleting old runs
+
+Each run directory holds a full Pi session, so old runs are deleted. Once per parent process start, the parent deletes a run that finished more than `keepRunsFor` days ago (30 by default, `false` to keep everything). It runs in the background, never in the 2-second refresh, and subagents don't run it.
+
+A run is deleted only if it has ended, Rex confirmed its process exited, it isn't queued, it was never taken over, and its outcome was delivered:
+
+- A foreground outcome was delivered when its call returned.
+- A nested outcome was delivered once its parent run has ended, or the parent's record is gone.
+- A background outcome was delivered once its own parent saw it on its branch and wrote `deliveredAt` in the record. Only that parent can know, so a background run whose parent never comes back is kept.
+
+Children are checked first, and a run with a kept child is kept, because admission and cancellation walk a run's ancestors. Under the admission lock, cleanup checks the run again, drops it from any reservation or queue, and renames its directory out of the run list. It deletes the files after releasing the lock.
+
+Deleting a run removes its conversation, result, and diagnostics. `continueFrom` on it then fails, and a `/tree` move to an older branch can't deliver it again.
+
 ### The claim
 
 Three things can end a run: the subagent finishing, you taking it over, and the parent cancelling it. Each writes its outcome to a temporary file, syncs it, and hard-links it to `claim`. Linking fails if `claim` already exists, so the first one wins, and a crash can't leave an empty claim. Each holds the run's lock while it does this. The lock directory records its holder's process ID and start time, so another process can remove it once that holder is gone.

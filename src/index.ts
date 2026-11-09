@@ -28,6 +28,7 @@ import {
   transitionView,
 } from "./delivery.ts";
 import { claimRuntime } from "./load-guard.ts";
+import { cleanupRuns, markDelivered } from "./retention.ts";
 import { workingDirectory } from "./settings.ts";
 import { clearEligible, closeDecision, dismiss, keep } from "./terminals.ts";
 import { registerReporter } from "./reporter.ts";
@@ -56,6 +57,7 @@ import { cappedText, resultText } from "./results.ts";
 
 type TabView = NonNullable<Awaited<ReturnType<typeof clearEligible>>>;
 
+const retentionStarted = Symbol.for("pi-rex-subagents.retention-started");
 const entry = fileURLToPath(import.meta.url);
 const live = (run: RunRecord) => !isTerminal(run.lifecycle) || run.process.state !== "exited";
 const waitingFirst = (a: RunRecord, b: RunRecord) =>
@@ -198,9 +200,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   const views = async (ctx: ExtensionContext, records: RunRecord[]) => {
     const delivered = deliveredRunIds(ctx.sessionManager.getBranch());
     return Promise.all(
-      sessionRuns(ctx, records).map(async (run) =>
-        transitionView(run, await readClaim(run.paths.claim), delivered),
-      ),
+      sessionRuns(ctx, records).map(async (run) => {
+        if (run.background && delivered.has(run.id)) await markDelivered(run);
+        return transitionView(run, await readClaim(run.paths.claim), delivered);
+      }),
     );
   };
   const clearTimer = () => {
@@ -388,6 +391,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     if (refreshing) return;
     refreshing = true;
     try {
+      // Cleanup can remove records that tab reconciliation would otherwise write back.
+      await (Reflect.get(globalThis, retentionStarted) as Promise<void> | undefined);
       const records = await listRuns();
       const runs = ownedRuns(records, ctx.sessionManager.getSessionId());
       for (const run of runs) {
@@ -421,6 +426,15 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   };
   pi.on("session_start", async (event, ctx) => {
     context = ctx;
+    if (!childId && !Reflect.has(globalThis, retentionStarted)) {
+      const cleanup = (async () => {
+        await views(ctx, await listRuns());
+        await cleanupRuns();
+      })().catch((error: unknown) => {
+        ctx.ui.setStatus("subagents", `Subagent records: ${errorText(error)}`);
+      });
+      Reflect.set(globalThis, retentionStarted, cleanup);
+    }
     widget = setInterval(() => {
       void refresh(ctx);
     }, 2000);

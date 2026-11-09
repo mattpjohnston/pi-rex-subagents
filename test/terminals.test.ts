@@ -17,6 +17,7 @@ beforeEach(async () => {
   vi.stubEnv("PI_SUBAGENTS_REX", rex);
   vi.stubEnv("PI_SUBAGENTS_RUN_ID", "");
   vi.stubEnv("PI_SUBAGENTS_RUN_DIR", "");
+  await writeFile(join(dir, "limits.json"), JSON.stringify({ keepRunsFor: false }));
   await writeFile(log, "");
   await writeFile(
     rex,
@@ -249,7 +250,10 @@ test("one refresh shares the session inspection between open tabs", async () => 
 
 test("auto-close persists closure and removes the closed tab from the widget count", async () => {
   const run = await record("open");
-  await writeFile(join(dir, "limits.json"), JSON.stringify({ closeCompletedAfter: 0 }));
+  await writeFile(
+    join(dir, "limits.json"),
+    JSON.stringify({ closeCompletedAfter: 0, keepRunsFor: false }),
+  );
   const { refresh, widgets } = await parent();
   expect((await refresh(true)).some((call) => call.startsWith("block close"))).toBe(true);
   expect(await readRun(run.id)).toHaveProperty("tabClosedAt", expect.any(Number));

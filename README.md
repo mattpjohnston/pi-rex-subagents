@@ -75,7 +75,7 @@ Ask subagents for a short final report, and to put anything long in a file. The 
 - `/subagents dismiss <label>` closes one finished subagent's tab.
 - `/subagent-takeover`, typed in a subagent's own tab, makes the session yours. It stops reporting to the parent and won't exit when it's done.
 
-Closing a tab doesn't delete anything. The conversation, result, and records stay on disk.
+Closing a tab doesn't delete anything. The conversation, result, and records stay on disk until an old run is deleted after `keepRunsFor` days.
 
 When a subagent needs you, for example to answer a dialog or Pi's trust prompt, the parent shows a notice with the `/subagents go` command for it. The subagent also sends a desktop notification.
 
@@ -113,13 +113,20 @@ The parent model can call `subagent_control`:
 Settings live in `~/.pi/agent/subagents/limits.json`. The extension reads it before each launch, so changes apply straight away.
 
 ```json
-{ "active": 4, "depth": 2, "providers": { "openrouter": 2 }, "closeCompletedAfter": 60 }
+{
+  "active": 4,
+  "depth": 2,
+  "providers": { "openrouter": 2 },
+  "closeCompletedAfter": 60,
+  "keepRunsFor": 30
+}
 ```
 
 - `active` is how many subagents can run at once across your machine. The default is 4.
 - `providers` caps subagents per provider.
 - `depth` is how many levels of subagents can exist below a session you started. The default is 2. Set it to 1 to stop subagents starting their own.
 - `closeCompletedAfter` is how many seconds a finished tab stays open. Set it to `false` to keep tabs.
+- `keepRunsFor` is how many days to keep a finished run's conversation, result, and records. The default is 30. Set it to `false` to keep everything. Each time Pi starts, older runs are deleted, but never one that is running, queued, taken over, or whose result hasn't reached its parent yet.
 
 If the file is missing, the defaults apply. If it's invalid, launches stop with an error that names the file.
 
