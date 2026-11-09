@@ -28,7 +28,7 @@ import {
   listRuns,
   type ModelSettings,
 } from "./records.ts";
-import { claim, readClaim, withAdmissionLock, withRunLock } from "./claims.ts";
+import { claim, readClaim, withAdmissionLock, withProtocolLock, withRunLock } from "./claims.ts";
 import { admit, claimedAncestor, readLimits, removeTicket } from "./admission.ts";
 import { InboxMessage } from "./inbox.ts";
 import { checkoutRoot } from "./checkout.ts";
@@ -67,7 +67,11 @@ export const STARTUP_MS = 60_000;
 export const SHUTDOWN_MS = 10_000;
 export const CANCELLATION_MS = 30_000;
 
-export async function prepareRun(input: LaunchInput, ctx: ExtensionContext): Promise<RunRecord> {
+export async function prepareRun(
+  input: LaunchInput,
+  ctx: ExtensionContext,
+  launchCaller?: string,
+): Promise<RunRecord> {
   const parentRun = process.env.PI_SUBAGENTS_RUN_ID
     ? await readRun(process.env.PI_SUBAGENTS_RUN_ID)
     : null;
@@ -136,6 +140,7 @@ export async function prepareRun(input: LaunchInput, ctx: ExtensionContext): Pro
       parentRun?.parentSessionId ??
       ctx.sessionManager.getSessionId(),
     parentRunId: parentRun?.id ?? null,
+    ...(launchCaller ? { launchCaller } : {}),
     depth: parentRun ? parentRun.depth + 1 : 1,
     activity: initialActivity(),
     rex: null,
@@ -243,7 +248,32 @@ export async function cancel(
   });
   if (winner === "cancelled") afterClaim?.();
   if (winner === "taken_over") return winner;
-  for (const child of targets.filter((r) => r.id !== run.id)) await signalCancelled(child);
+  await Promise.all(
+    targets
+      .filter((r) => r.id !== run.id)
+      .map(async (child) => {
+        await signalCancelled(child);
+        const deadline = Date.now() + CANCELLATION_MS;
+        do {
+          await reconcile(child);
+          if (!child.rex && child.lifecycle === "admitting")
+            child.process = { state: "exited", code: null };
+          if (child.process.state === "exited") break;
+          await delay(200);
+        } while (Date.now() < deadline);
+        const fresh = await readRun(child.id);
+        fresh.process =
+          child.process.state === "live"
+            ? { state: "unresolved", pid: child.process.pid }
+            : child.process;
+        if (!isTerminal(fresh.lifecycle)) {
+          const winner = await readClaim(fresh.paths.claim);
+          const result = winner === "result" ? await readResult(fresh).catch(() => null) : null;
+          transition(fresh, winner === "result" ? (result?.outcome ?? "failed") : "cancelled");
+        }
+        await writeRun(fresh);
+      }),
+  );
   if (winner === "result") {
     const result = await readResult(run).catch(() => null);
     const remaining = (result?.finishedAt ?? run.finishedAt ?? 0) + SHUTDOWN_MS - Date.now();
@@ -257,8 +287,22 @@ export async function cancel(
   return winner;
 }
 async function signalCancelled(run: RunRecord): Promise<void> {
+  // Keep the launcher alive until it can close a block returned after the cancellation claim.
+  // Otherwise signalling its ancestor first can kill the only process waiting for Rex's reply.
+  const deadline = Date.now() + CANCELLATION_MS;
+  while (run.lifecycle === "starting" && !run.rex && Date.now() < deadline) {
+    await delay(100);
+    Object.assign(run, await readRun(run.id));
+  }
   await reconcile(run);
   if ((run.process.state === "live" || run.process.state === "unresolved") && run.process.pid) {
+    if ((await readClaim(run.paths.claim)) === "result") {
+      const result = await readResult(run).catch(() => null);
+      const remaining = (result?.finishedAt ?? 0) + SHUTDOWN_MS - Date.now();
+      if (remaining > 0) await delay(remaining);
+      if (run.location) await closeBlock(run.location);
+      return;
+    }
     try {
       process.kill(run.process.pid, "SIGTERM");
     } catch (error) {
@@ -440,15 +484,22 @@ export async function runForeground(
   if (!launched) {
     const admitted = await admit(run, signal, progress, options.detach);
     if (admitted === "paused" || stopped(options)) return { run };
-    if (!admitted || signal?.aborted) {
+    const starting =
+      admitted &&
+      !signal?.aborted &&
+      (await withAdmissionLock(async () => {
+        if ((await readClaim(run.paths.claim)) || (await claimedAncestor(run))) return false;
+        transition(run, "starting");
+        await writeRun(run);
+        return true;
+      }));
+    if (!starting) {
       await cancel(run);
       transition(run, "cancelled");
       run.process = { state: "exited", code: null };
       await writeRun(run);
       return { run };
     }
-    transition(run, "starting");
-    await writeRun(run);
     progress(run);
     if (run.access === "inspect") {
       try {
@@ -499,6 +550,15 @@ export async function runForeground(
           blockId: reply.block_ids[0],
         };
         run.location = { ...run.rex };
+        const cancelled = await withProtocolLock(run.paths.lock, async () => {
+          const winner = await readClaim(run.paths.claim);
+          if (winner) return winner === "cancelled";
+          return (await claimedAncestor(run)) ? claim(run.paths.claim, "cancelled") : false;
+        });
+        if (cancelled) {
+          // Publish Rex identity only after cleanup, so ancestor cancellation keeps us alive.
+          await closeBlock(run.location);
+        }
       } catch (error) {
         run.diagnostic = `Uncertain Rex launch: ${errorText(error)}. Not retried.`;
         transition(run, "failed");

@@ -77,6 +77,7 @@ export const QueueState = Type.Object(
 export type QueueState = Static<typeof QueueState>;
 export const Activity = Type.Object(
   {
+    effective: Type.Optional(Settings),
     parked: Type.Union([Type.Literal("foreground"), Type.Literal("settled"), Type.Null()]),
     readyToWake: Type.Boolean(),
     tools: Type.Array(Type.Object({ id: Type.String(), name: Type.String() }, object)),
@@ -111,6 +112,7 @@ export const RunRecord = Type.Object(
     rootParentSessionId: Type.Optional(text),
     activity: Type.Optional(Activity),
     parentRunId: nullableText,
+    launchCaller: Type.Optional(text),
     depth: Type.Integer({ minimum: 0 }),
     rex: Type.Union([Location, Type.Null()]),
     location: Type.Union([Location, Type.Null()]),
@@ -256,6 +258,7 @@ export async function writeRun(run: RunRecord): Promise<void> {
       return null;
     });
     if (saved?.activity) run.activity = saved.activity;
+    if (saved?.activity?.effective) run.effective = saved.activity.effective;
     run.updatedAt = Date.now();
     await atomicWrite(run.paths.run, parse(RunRecord, run));
   });

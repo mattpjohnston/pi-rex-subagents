@@ -174,6 +174,7 @@ export async function admissionSnapshot(
     const reservation = reservationFor(snapshot, run);
     if (!reservation) continue;
     run.joining = [];
+    const launching = records.find((r) => r.id === run.id);
     let parent = run.parent;
     while (parent) {
       const ancestor = runs.find((r) => r.id === parent);
@@ -185,6 +186,19 @@ export async function admissionSnapshot(
         record.activity?.tools.some((tool) => tool.name !== "subagent")
       )
         run.joining.push(parent);
+      if (
+        parent === run.parent &&
+        run.joining.includes(parent) &&
+        launching?.launchCaller &&
+        !launching.background &&
+        record.activity?.tools.some(
+          (tool) =>
+            tool.name !== "subagent" &&
+            (tool.id === launching.launchCaller ||
+              launching.launchCaller?.startsWith(`${tool.id}/`)),
+        )
+      )
+        run.joinCycle = parent;
       parent = ancestor.parent;
     }
   }

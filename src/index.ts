@@ -135,7 +135,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       label: input.label?.trim() || "pending launch",
       checkoutRoot: root,
     });
-    const run = await prepareRun(input, ctx);
+    const run = await prepareRun(input, ctx, event.parentToolCallId);
     intended.set(event.toolCallId, {
       id: run.id,
       label: run.label,

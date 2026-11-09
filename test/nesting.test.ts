@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
-import { admissionSnapshot, readLimits } from "../src/admission.ts";
+import { admissionSnapshot, readLimits, updateMemberProvider } from "../src/admission.ts";
 import { decide, launchCycle } from "../src/admission-core.ts";
 import { claim, withAdmissionLock } from "../src/claims.ts";
 import { readClaim } from "../src/claims.ts";
@@ -95,6 +95,13 @@ it("builds the model's nested reservation, parking, takeover, and ancestry shape
     // Lifecycle observations can be stale in a different process; they cannot clear activity.
     await writeRun(b);
     expect((await readRun(b.id)).activity?.parked).toBe("foreground");
+    await updateActivity(b.id, (activity, run) => {
+      run.effective = { ...run.effective, provider: "human-provider" };
+      activity.effective = run.effective;
+    });
+    await updateMemberProvider(b.id, "human-provider");
+    await writeRun(b);
+    expect((await readRun(b.id)).effective.provider).toBe("human-provider");
     let snapshot = await withAdmissionLock(() =>
       admissionSnapshot({ active: 1, depth: 3, providers: {} }),
     );
@@ -114,6 +121,17 @@ it("builds the model's nested reservation, parking, takeover, and ancestry shape
       blockers: [b.id],
     });
     expect(launchCycle(snapshot, c.id)).toBeNull();
+    c.background = false;
+    c.launchCaller = "wrapper";
+    await writeRun(c);
+    await updateActivity(b.id, (activity) => {
+      activity.tools.push({ id: "wrapper", name: "codemode" });
+    });
+    snapshot = await admissionSnapshot(await readLimits());
+    expect(launchCycle(snapshot, c.id)).toEqual([c.id, b.id, c.id]);
+    delete c.launchCaller;
+    c.background = true;
+    await writeRun(c);
     await claim(b.paths.claim, "taken_over");
     snapshot = await admissionSnapshot(await readLimits());
     expect(snapshot.runs.find((r) => r.id === b.id)).toMatchObject({
@@ -130,8 +148,29 @@ it("builds the model's nested reservation, parking, takeover, and ancestry shape
     const sibling = await make(5, a, "/other");
     const queued = await make(6, sibling, "/third");
     await atomicWrite(join(root, "queue", `2-${queued.id}.json`), { runId: queued.id, seq: 2 });
+    for (const record of [sibling, queued])
+      await updateActivity(record.id, (_activity, run) => {
+        run.process = { state: "exited", code: null };
+      });
+    const completed = await make(7, a, "/completed");
+    completed.process = { state: "exited", code: 0 };
+    await writeRun(completed);
+    await atomicWrite(completed.paths.result, {
+      version: 1,
+      runId: completed.id,
+      outcome: "completed",
+      assistantText: "done",
+      sessionFile: null,
+      effective: completed.effective,
+      stopReason: "stop",
+      reason: null,
+      finishedAt: Date.now(),
+    });
+    await claim(completed.paths.claim, "result");
     await cancel(a);
     expect(await readClaim(a.paths.claim)).toBe("cancelled");
+    expect(await readClaim(completed.paths.claim)).toBe("result");
+    expect((await readRun(completed.id)).lifecycle).toBe("completed");
     expect(await readClaim(sibling.paths.claim)).toBe("cancelled");
     expect(await readClaim(queued.paths.claim)).toBe("cancelled");
     expect(await readClaim(b.paths.claim)).toBe("taken_over");

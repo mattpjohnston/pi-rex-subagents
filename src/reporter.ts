@@ -329,21 +329,24 @@ export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
         });
     }, INBOX_POLL_MS);
   });
-  pi.on("before_agent_start", async (event, ctx) => {
+  pi.on("before_agent_start", async (_event, ctx) => {
     hasSettled = false;
-    if (event.messageType === "user" && !(event.prompt ?? "").includes("[subagent ")) {
-      await updateActivity(run.id, (activity) => {
-        activity.parked = null;
-        activity.readyToWake = false;
-      });
-    } else await wake(run.id);
+    await wake(run.id);
     await enforceRestriction(ctx, "before_agent_start");
+  });
+  pi.on("before_provider_request", async () => {
+    log("model_call", { activity: (await readRun(run.id)).activity });
+  });
+  pi.on("cache_warming_decision", async () => {
+    if ((await readRun(run.id)).activity?.parked) return { action: "stop" as const };
+    return;
   });
   pi.on("model_select", async (event, ctx) => {
     await updateActivity(run.id, (activity, record) => {
       activity.parked = null;
       activity.readyToWake = false;
       record.effective = settings(ctx);
+      activity.effective = record.effective;
     });
     await updateMemberProvider(run.id, event.model.provider);
   });

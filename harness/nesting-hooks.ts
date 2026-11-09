@@ -5,6 +5,7 @@ import type { ExtensionAPI, MessageEndEventResult } from "@earendil-works/pi-cod
 import { Type } from "typebox";
 import type { JsonValue } from "@earendil-works/pi-ai";
 import { parse, readRun } from "../src/records.ts";
+import { LaunchInput } from "../src/launch.ts";
 
 const Batch = Type.Object({
   waitFor: Type.Optional(Type.String()),
@@ -22,6 +23,25 @@ export default async function nestingHooks(pi: ExtensionAPI): Promise<void> {
   const plans = process.env.HARNESS_NESTED_PLAN_DIR;
   if (!id || !plans) return;
   const run = await readRun(id);
+  pi.registerCommand("harness-model", {
+    description: "Human harness model change while a managed child is parked",
+    handler: async (selection, ctx) => {
+      const slash = selection.indexOf("/");
+      const model = ctx.modelRegistry.find(selection.slice(0, slash), selection.slice(slash + 1));
+      if (!model || !(await pi.setModel(model))) throw new Error("Harness model selection failed");
+    },
+  });
+  if (run.label === "wrapper-owner")
+    pi.registerTool({
+      name: "harness_nested",
+      label: "Nested tool wrapper",
+      description: "Call the public subagent tool through an ordinary tool wrapper.",
+      parameters: LaunchInput,
+      async execute(_id, input, signal, _update, ctx) {
+        const result = await ctx.executeTool("subagent", input, { signal });
+        return { content: [{ type: "text", text: JSON.stringify(result) }], details: undefined };
+      },
+    });
   let batches;
   try {
     batches = parse(
@@ -41,7 +61,7 @@ export default async function nestingHooks(pi: ExtensionAPI): Promise<void> {
       return;
     const batchIndex = index++;
     const batch = batches[batchIndex];
-    if (!batch)
+    if (!batch || !batch.calls.length)
       return {
         message: {
           ...event.message,
