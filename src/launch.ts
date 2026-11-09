@@ -28,6 +28,7 @@ import {
 } from "./records.ts";
 import { claim, readClaim, withAdmissionLock, withRunLock } from "./claims.ts";
 import { admit, removeTicket } from "./admission.ts";
+import { InboxMessage } from "./inbox.ts";
 import { checkoutRoot } from "./checkout.ts";
 import { captureFingerprint, compareFingerprints, type Fingerprint } from "./fingerprint.ts";
 import { executable, resolveSettings, workingDirectory } from "./settings.ts";
@@ -518,15 +519,7 @@ export async function runForeground(
       let winner = await readClaim(run.paths.claim);
       if (winner === "taken_over") {
         const pending = parse(
-          Type.Array(
-            Type.Object({
-              id: Type.String(),
-              runId: Type.String(),
-              text: Type.String(),
-              sender: Type.String(),
-              createdAt: Type.Number(),
-            }),
-          ),
+          Type.Array(InboxMessage),
           await readJson(join(dirname(run.paths.run), "takeover-messages.json")).catch(
             (error: unknown) => {
               if (isMissing(error)) return [];

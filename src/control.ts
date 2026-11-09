@@ -65,14 +65,27 @@ export async function controlList(runs: readonly RunRecord[]) {
           const reply = object(
             await rexJson([
               "block",
-              "inspect",
+              "call",
               "-s",
               location.sessionId,
+              "-b",
               location.blockId,
-              "--json",
+              "program_status",
             ]),
           );
-          lastRexStatus = object(reply.block).program_status ?? null;
+          const statuses = Array.isArray(reply.records) ? reply.records.map(object) : [];
+          const status = statuses
+            .filter((status) => typeof status.updated_at === "string")
+            .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)))[0];
+          lastRexStatus = status
+            ? {
+                state: status.state,
+                kind: status.kind,
+                title: status.title,
+                message: status.msg,
+                updatedAt: status.updated_at,
+              }
+            : null;
         } catch {
           lastRexStatus = "unknown";
         }

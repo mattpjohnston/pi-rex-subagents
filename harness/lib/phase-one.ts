@@ -66,7 +66,12 @@ export async function events(record: RunRecord): Promise<Event[]> {
 export async function result(record: RunRecord): Promise<ResultFile> {
   return parse(ResultFile, JSON.parse(await readFile(record.paths.result, "utf8")));
 }
-export async function start(run: Run, input: LaunchInput, extraEnv: Record<string, string> = {}) {
+export async function start(
+  run: Run,
+  input: LaunchInput,
+  extraEnv: Record<string, string> = {},
+  extensions: string[] = [],
+) {
   assert(input.label);
   const label = input.label;
   const plan = join(run.out, `${label}-plan.json`);
@@ -86,6 +91,7 @@ export async function start(run: Run, input: LaunchInput, extraEnv: Record<strin
     },
   );
   argv.splice(argv.length - 1, 0, "-e", join(repo, "harness", "parent-tools.ts"));
+  argv.splice(argv.length - 1, 0, ...extensions.flatMap((path) => ["-e", path]));
   const parent = await run.newSession(label, argv);
   const record = () =>
     until(`run record ${label}`, async () =>

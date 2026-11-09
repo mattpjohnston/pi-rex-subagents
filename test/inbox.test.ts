@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Type } from "typebox";
@@ -15,6 +15,7 @@ import {
   messageState,
   messageText,
   readAck,
+  sendInboxMessage,
   waitForAck,
 } from "../src/inbox.ts";
 import { atomicWrite, parse, privateDirectory, runPaths, type RunRecord } from "../src/records.ts";
@@ -148,4 +149,47 @@ it("scopes by ancestry, never another parent's tree, and tolerates record order"
     run("other-child", "stranger-session", "stranger"),
   ];
   expect(ownedRuns(runs, "parent").map((r) => r.id)).toEqual(["grandchild", "child"]);
+});
+
+it("parent message recovers a confirmed dead run-lock holder without a reporter helping", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pirs-inbox-lock-"));
+  const previous = process.env.PI_SUBAGENTS_STATE_DIR;
+  process.env.PI_SUBAGENTS_STATE_DIR = dir;
+  try {
+    const paths = runPaths(join(dir, "child"));
+    await privateDirectory(paths.inbox);
+    const dead = JSON.parse(
+      execFileSync(
+        process.execPath,
+        [
+          "--input-type=module",
+          "-e",
+          "import {execFileSync} from 'node:child_process'; console.log(JSON.stringify({pid:process.pid,startTime:execFileSync('ps',['-p',String(process.pid),'-o','lstart='],{encoding:'utf8'}).trim(),token:'dead'}))",
+        ],
+        { encoding: "utf8" },
+      ),
+    ) as { pid: number; startTime: string; token: string };
+    await mkdir(paths.lock, { mode: 0o700 });
+    await atomicWrite(join(paths.lock, "holder.json"), dead);
+    const run = {
+      id: "child",
+      parentSessionId: "parent",
+      paths,
+      lifecycle: "running",
+      rex: { sessionId: "owned", windowId: "owned", blockId: "owned" },
+      process: { state: "live", pid: null },
+    } as RunRecord;
+    const response = await sendInboxMessage(run, "parent", "Hold", AbortSignal.abort());
+    expect(response.status).toBe("unacknowledged");
+    expect((await inboxEntries(run)).length).toBe(1);
+    await expect(stat(paths.lock)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await sendInboxMessage(run, "stranger", "Forbidden")).toEqual({
+      status: "refused",
+      reason: "Not this run's immediate parent",
+    });
+  } finally {
+    if (previous === undefined) delete process.env.PI_SUBAGENTS_STATE_DIR;
+    else process.env.PI_SUBAGENTS_STATE_DIR = previous;
+    await rm(dir, { recursive: true, force: true });
+  }
 });

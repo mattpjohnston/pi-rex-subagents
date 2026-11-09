@@ -13,11 +13,11 @@ The first release covers:
 - `read` children restricted to file tools and an allowlisted `git_read`.
 - `inspect` children that keep a shell and MCP but report afterwards whether the checkout changed during the run.
 - Background results pushed into the parent session, coalesced, and reconciled after reloads and crashes.
+- Parent controls to list runs, cancel a stuck child, and send acknowledged stop or hold orders without typing into its terminal.
 
 These are designed but not built yet:
 
 - Nested children. In this release, children cannot launch their own children.
-- The model-facing `subagent_control` tool (list, cancel, message).
 - A Rex action that jumps to the next waiting child.
 - A desktop notice when a child waits.
 
@@ -84,6 +84,20 @@ Ask children for a short final report, and have bulk output written to a file th
 Closing a child's tab never deletes its result, session, or records.
 
 When a child stops for a human, for example on a dialog or Pi's project-trust prompt, the parent shows a notice naming the child and the `/subagents go` command.
+
+### Parent controls
+
+The parent model has one `subagent_control` tool:
+
+| Operation | Inputs          | Use                                                                                                                                                                                                |
+| --------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list`    | No other inputs | This parent's runs, bounded to 30, with access, state, queue reason, checkout, last Rex status, human wait, and elapsed time.                                                                      |
+| `cancel`  | `runId`         | Cancel queued or live work before replacing a stuck agent. A taken-over child is refused. A process hanging after its result's 10-second shutdown grace can be closed without changing the answer. |
+| `message` | `runId`, `text` | Send a correction or stop/hold order, as steering during work or a prompt while idle. Not for chaining new work; launch another child for that.                                                    |
+
+`message` returns `accepted` only after the child acknowledges it under the same lock as settlement and takeover. It returns `refused` with a reason, or `unacknowledged` after 10 seconds. An unacknowledged message may still be accepted later; it is not proof of delivery or refusal. The message ID appears in the child's saved user message, and settlement waits for accepted messages to be consumed before publishing. Messages never answer an open dialog. A takeover outcome lists accepted messages that were not consumed when the human took ownership.
+
+Children do not get `subagent_control` until nesting is enabled.
 
 ### Limits
 

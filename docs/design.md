@@ -34,7 +34,7 @@ The lifecycle is `admitting`, then `starting`, then `running`, then one outcome:
 
 **One claim per run.** Settlement, takeover, and cancellation each write their outcome to a private temporary file, sync it, and hard-link it into place as `claim`. The link fails if a claim exists, so the first link wins, and a crash cannot leave an empty claim behind. Each of the three holds the run lock while it claims. The lock directory is published atomically with its holder's process ID and start time, so any process can recover it once the holder is gone, under the admission lock.
 
-- **Settlement.** On `agent_settled`, the child reporter takes the lock and reads the claim. Under `cancelled` it exits. Under `taken_over` it stays alive and publishes nothing. With no claim, it writes the result, claims `result`, and shuts down. One settlement owner makes this decision, so later rules (descendant outcomes, accepted messages) extend one decision table instead of racing in separate handlers.
+- **Settlement.** On `agent_settled`, the child reporter takes the admission lock, then the run lock, and reads the claim. Under `cancelled` or `result` it exits. Under `taken_over` it stays alive and publishes nothing. With no claim, it accepts pending inbox messages, sends unsent accepted messages together in one turn, and publishes nothing. Sent-but-unconsumed messages also block publication: Pi starts work queued from settlement only after all settled handlers return. Otherwise it writes the result, claims `result`, and shuts down. Descendant outcomes and parking will extend marked places in this same decision table when nesting ships.
 - **Takeover.** `/subagent-takeover` claims `taken_over` before it acknowledges anything. If settlement or cancellation already won, takeover fails visibly. A reloaded child reads the claim at load, so a reload after takeover still does not publish.
 - **Cancellation.** The parent claims `cancelled` before it signals the child. If the claim says `taken_over`, it leaves the child alone. A child that hangs after claiming `result` can still be closed, and its outcome stays unchanged.
 
@@ -114,9 +114,18 @@ Parent transitions:
 
 Taken-over children are never cancelled by a transition.
 
+## Parent control and inbox
+
+The parent-only `subagent_control` tool has `list`, `cancel`, and `message`, with no model-facing wait operation. Listing is bounded to 30 and scopes by ancestry. Cancel uses the same claim-and-signal path as `/subagents cancel`, refuses human-owned children, and can close a hung result winner after its shutdown grace without changing its outcome.
+
+Each message is a private, atomically replaced `inbox/<message-id>.json` with `id`, `runId`, `text`, `sender` (the parent Pi session ID), and `createdAt`. Before acknowledgment its state is implicitly `written`. The companion `<message-id>.ack.json` is one union: `accepted` with `acceptedAt` and nullable `sentAt`, `consumed` with those timestamps and `consumedAt`, or `refused` with the winning `claim` and `refusedAt`. Every ack includes `messageId` and `runId`. The model's `sent` state is an accepted ack with non-null `sentAt`.
+
+The reporter polls every 250 ms rather than relying on filesystem notifications surviving atomic rename. Acceptance, dispatch, consumption, and claims take admission before run, so they can recover a confirmed dead lock holder in the same order. Acceptance rechecks the claim and refuses if any claim exists. Dispatch uses `pi.sendUserMessage` with the ID in the text, `deliverAs: "steer"` while working, or a prompt while idle. It never types into the terminal. Consumption requires finding that marker in a persisted user message. Pi emits `message_end` before appending to its session, so the reporter checks the branch after the event returns, during polling, and at settlement.
+
+The parent waits at most 10 seconds for an ack. Writing the message alone is never called delivery. Takeover saves a snapshot of accepted, unconsumed messages alongside the claim so the parent's `taken_over` outcome can list them, even if they are consumed later in the human-owned conversation.
+
 ## Later additions
 
-- **`subagent_control`.** A model-facing tool with `list`, `cancel`, and `message`. Each message is a file in the run's inbox, accepted or refused by the child reporter under the run lock, and accepted only while no claim exists. Settlement does not publish while an accepted message is unconsumed.
 - **Rex additions.** A `subagents.next_waiting` Rex action that jumps to the oldest waiting child, and an OSC 9 desktop notice when a child starts waiting.
 
 ## Models
@@ -126,6 +135,6 @@ Taken-over children are never cancelled by a transition.
 - `admission.py` covers reservations, parking, cycle refusal, and ceilings.
 - `protocol.py` covers one run's lock, claim, inbox, settlement, takeover, and cancellation, including a parent crash.
 
-Each explores every interleaving of its steps. Each also runs the rules from two earlier design rounds beside the current ones, labelled `e18` and `e19` in the code. A script exits nonzero unless the earlier rules fail where expected and the current rules pass. CI runs both models, and a Vitest test drives the TypeScript admission core with states the model generates.
+Each explores every interleaving of its steps. Each also runs earlier design rules beside the current ones, labelled `e18` or `e19` in the code. A script exits nonzero unless the earlier rules fail where expected and the current rules pass. CI runs both models. Vitest differential tests drive the TypeScript admission core with generated states and compare inbox/settlement decisions against all 461 reachable current protocol states, including 18 sent-but-unconsumed settlements. Changing the wait rule to publish reproduces the model's unsafe `e19` mistake and fails the differential test.
 
 The models make each step atomic. Races inside a step, Rex and Pi failures, and branch navigation are covered by the real Pi and Rex harness instead.
