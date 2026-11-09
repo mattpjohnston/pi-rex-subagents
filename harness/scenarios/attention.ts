@@ -433,12 +433,13 @@ export default async function attention(): Promise<void> {
       });
       for (const record of [dialogFinal, trustFinal]) assert.equal(record.waiting, null);
       await delay(500);
-      const notices = stream.seen.filter(
-        (event) =>
-          event.name === "desktop_notification" &&
-          (event.blockId === dialogRex.blockId || event.blockId === trustRex.blockId),
-      );
-      assert.deepEqual(notices, [], "waiting children send no desktop notification");
+      const notices = stream.seen.filter((event) => event.name === "desktop_notification");
+      const dialogNotices = notices.filter((event) => event.blockId === dialogRex.blockId);
+      const trustNotices = notices.filter((event) => event.blockId === trustRex.blockId);
+      assert.equal(dialogNotices.length, 2);
+      assert.equal(trustNotices.length, 1);
+      assert.match(JSON.stringify(dialogNotices), /attention-dialog.*Subagent acceptance question/);
+      assert.match(JSON.stringify(trustNotices), /attention-trust.*Project trust/);
       assert.equal(
         (await events(dialogFinal)).filter((event) => event.type === "ui_prompt_start").length,
         2,
@@ -456,13 +457,13 @@ export default async function attention(): Promise<void> {
       await run.record("attention-evidence.json", {
         dialogFinal,
         trustFinal,
-        desktopNotifications: notices.length,
+        noticeCounts: { dialog: dialogNotices.length, trust: trustNotices.length },
         timing: times,
         killedStreams: killed.length,
         serverPidUnchanged: serverBefore.pid === serverAfter.pid,
       });
       console.log(
-        `attention: PASS; script + go next select the oldest wait from another session; dialog moved and still produced a stream exit; no desktop notifications; trust wait with no blocked status; dropped stream reconciled a same-session move through liveness; server pid unchanged; 48 live records ms ${times.map((ms) => ms.toFixed(1)).join(", ")}; cross-session move deferred`,
+        `attention: PASS; script + go next select the oldest wait from another session; dialog moved and still produced ${dialogNotices.length} notices and a stream exit; trust notice ${trustNotices.length} with no blocked status; dropped stream reconciled a same-session move through liveness; server pid unchanged; 48 live records ms ${times.map((ms) => ms.toFixed(1)).join(", ")}; cross-session move deferred; banner remains MANUAL`,
       );
     } finally {
       stream.stop();
