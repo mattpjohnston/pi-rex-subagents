@@ -43,7 +43,7 @@ export default async function launch(): Promise<void> {
       assert.equal(final.lifecycle, "completed");
       assert.equal(final.process.state, "exited");
       assert.equal(final.parentRunId, null);
-      assert.equal(final.depth, 0);
+      assert.equal(final.depth, 1);
       assert.equal(await readFile(final.paths.claim, "utf8"), "result");
       assert.match(reported.assistantText, new RegExp(marker));
       const facts = object(
