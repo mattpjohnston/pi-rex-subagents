@@ -115,7 +115,7 @@ The `active` cap counts running subagents across every parent, including ones yo
 
 A subagent's reservation ends when Rex confirms its process exited. If Rex can't be reached, the reservation stays. A taken-over subagent keeps its reservation until its process exits.
 
-While a `write` subagent holds a repository, the parent's own `edit` and `write` calls inside it are refused, including an edit in the same message as the launch. `bash` is never refused, because there's no way to know what a command will touch. This keeps cooperating tools apart. It isn't a lock.
+While a `write` subagent holds a repository, the parent's own `edit` and `write` calls inside it are refused, including an edit in the same message as the launch. `bash` is never refused, because there's no way to know what a command will touch. The same goes for an `edit` or `write` tool from another extension that doesn't take a single `path`. This keeps cooperating tools apart. It isn't a lock.
 
 ### Nested subagents
 

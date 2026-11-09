@@ -168,8 +168,12 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   });
   pi.on("tool_call", async (event, ctx) => {
     if (!isToolCallEventType("edit", event) && !isToolCallEventType("write", event)) return;
+    // Another extension's edit or write tool may name its targets inside an edit script. Like
+    // bash, a call whose targets can't be known in advance is not refused.
+    const path: unknown = event.input.path;
+    if (typeof path !== "string") return;
     try {
-      const target = await canonicalTarget(ctx.cwd, event.input.path);
+      const target = await canonicalTarget(ctx.cwd, path);
       const writer =
         (await sameMessageWriter(ctx, target)) ??
         [...intended.values()].find((run) => contains(run.checkoutRoot, target)) ??
