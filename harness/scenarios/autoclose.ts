@@ -39,6 +39,11 @@ export default async function autoclose(): Promise<void> {
       30_000,
     );
     assert(Date.now() - finishedAt >= (GRACE_S - 2) * 1000, "not closed before the grace period");
+    await until(
+      "closed tab is recorded on disk",
+      async () => (await current(run, unviewed.id)).tabClosedAt !== undefined,
+      5_000,
+    );
     await access(unviewed.paths.result);
     assert((await current(run, unviewed.id)).sessionFile, "transcript kept after the tab closed");
     console.log(

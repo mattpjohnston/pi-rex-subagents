@@ -13,6 +13,8 @@ pnpm models
 
 CI runs all of these on every push.
 
+`node harness/refresh-cost.ts` measures Rex calls and elapsed time per parent refresh. Use `copy <state-dir> <parent-pi-session-id> [passes]` to measure a copy of existing records, or `synthetic <runs> <sessions> [passes]` to create temporary runs and Rex sessions.
+
 ## End-to-end tests
 
 The tests in `harness/` start a real Pi and real Rex, launch subagents through the extension, and check what actually happened: tabs, run records, result files, session files, and changed files. Run one with:

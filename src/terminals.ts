@@ -1,13 +1,45 @@
 import { readClaim } from "./claims.ts";
-import type { Location, RunRecord } from "./records.ts";
-import { closeBlock, object, observeProcess, rexJson } from "./rex.ts";
+import { readRun, writeRun, type Location, type RunRecord } from "./records.ts";
+import { closeBlock, locate, object, observeProcess, rexJson } from "./rex.ts";
 
-export async function clearEligible(run: RunRecord): Promise<boolean> {
-  if (run.lifecycle !== "completed" || !run.rex || (await readClaim(run.paths.claim)) !== "result")
-    return false;
-  const observation = await observeProcess(run.location ?? run.rex);
-  if (observation.location === null || observation.process.state !== "exited") return false;
-  return !(await readTabState(observation.location, run.label)).kept;
+async function markTabClosed(run: RunRecord): Promise<void> {
+  const current = await readRun(run.id);
+  if (current.tabClosedAt === undefined) {
+    current.tabClosedAt = Date.now();
+    await writeRun(current);
+  }
+  run.tabClosedAt = current.tabClosedAt;
+}
+
+export async function clearEligible(
+  run: RunRecord,
+  sessions = new Map<string, Record<string, unknown>>(),
+): Promise<{ location: Location; viewing: boolean } | null> {
+  if (
+    run.lifecycle !== "completed" ||
+    !run.rex ||
+    run.tabClosedAt !== undefined ||
+    run.process.state !== "exited" ||
+    (await readClaim(run.paths.claim)) !== "result"
+  )
+    return null;
+  let location: Location | null;
+  try {
+    location = await locate(run.rex.blockId, run.location ?? run.rex);
+  } catch {
+    return null;
+  }
+  if (!location) {
+    await markTabClosed(run);
+    return null;
+  }
+  let session = sessions.get(location.sessionId);
+  if (!session) {
+    session = object(await rexJson(["session", "inspect", location.sessionId, "--json"]));
+    sessions.set(location.sessionId, session);
+  }
+  const state = tabState(session, location, run.label);
+  return state.kept ? null : { location, viewing: state.viewing };
 }
 export async function dismiss(run: RunRecord): Promise<void> {
   if (!run.rex) throw new Error(`Run ${run.id} has no known block`);
@@ -15,6 +47,7 @@ export async function dismiss(run: RunRecord): Promise<void> {
   if (observation.process.state !== "exited")
     throw new Error(`Refusing dismissal of live or unknown child ${run.id}`);
   if (observation.location) await closeBlock(observation.location);
+  await markTabClosed(run);
 }
 
 /** A tab you just left stays this long, so tabbing past it does not close it. */

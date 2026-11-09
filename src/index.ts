@@ -29,7 +29,7 @@ import {
 } from "./delivery.ts";
 import { claimRuntime } from "./load-guard.ts";
 import { workingDirectory } from "./settings.ts";
-import { clearEligible, closeDecision, dismiss, keep, readTabState } from "./terminals.ts";
+import { clearEligible, closeDecision, dismiss, keep } from "./terminals.ts";
 import { registerReporter } from "./reporter.ts";
 import {
   errorText,
@@ -53,6 +53,8 @@ import {
 } from "./launch.ts";
 import { RexEvents, locate, object, rexJson } from "./rex.ts";
 import { cappedText, resultText } from "./results.ts";
+
+type TabView = NonNullable<Awaited<ReturnType<typeof clearEligible>>>;
 
 const entry = fileURLToPath(import.meta.url);
 const live = (run: RunRecord) => !isTerminal(run.lifecycle) || run.process.state !== "exited";
@@ -191,12 +193,12 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   let context: ExtensionContext | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const notices = new Map<string, string>();
-  const sessionRuns = async (ctx: ExtensionContext) =>
-    (await listRuns()).filter((run) => run.parentSessionId === ctx.sessionManager.getSessionId());
-  const views = async (ctx: ExtensionContext) => {
+  const sessionRuns = (ctx: ExtensionContext, records: RunRecord[]) =>
+    records.filter((run) => run.parentSessionId === ctx.sessionManager.getSessionId());
+  const views = async (ctx: ExtensionContext, records: RunRecord[]) => {
     const delivered = deliveredRunIds(ctx.sessionManager.getBranch());
     return Promise.all(
-      (await sessionRuns(ctx)).map(async (run) =>
+      sessionRuns(ctx, records).map(async (run) =>
         transitionView(run, await readClaim(run.paths.claim), delivered),
       ),
     );
@@ -214,7 +216,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     const delivered = deliveredRunIds(branch);
     for (const id of inflight) if (delivered.has(id)) inflight.delete(id);
     const pending = [];
-    for (const run of await sessionRuns(ctx)) {
+    for (const run of sessionRuns(ctx, await listRuns())) {
       const claim = await readClaim(run.paths.claim);
       const view = transitionView(run, claim, delivered);
       if (!shouldAppend(view, ctx.sessionManager.getSessionId()) || inflight.has(run.id)) continue;
@@ -348,7 +350,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     }
   };
   const confirmReplacement = async (ctx: ExtensionContext, kind: string) => {
-    if (!blocksReplacement(await views(ctx), ctx.sessionManager.getSessionId())) return;
+    if (!blocksReplacement(await views(ctx, await listRuns()), ctx.sessionManager.getSessionId()))
+      return;
     const confirmed = await ctx.ui.confirm(
       "Cancel background subagents?",
       `This session has live, queued, or undelivered subagent work. ${kind} cancels parent-owned children and appends their outcomes here. A taken-over child keeps running.`,
@@ -360,23 +363,23 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   };
   // Grace and viewing timestamps live in memory: a reload only restarts the grace period.
   const closing = new Map<string, { eligibleSince: number; lastViewedAt: number | null }>();
-  const autoClose = async (runs: RunRecord[]) => {
+  const autoClose = async (runs: RunRecord[], tabs: Map<string, TabView>) => {
     const graceMs = await closeCompletedAfterMs();
     if (graceMs === null) return;
     for (const run of runs) {
-      if (!(await clearEligible(run))) {
+      const tab = tabs.get(run.id);
+      if (!tab) {
         closing.delete(run.id);
         continue;
       }
       const now = Date.now();
       const state = closing.get(run.id) ?? { eligibleSince: now, lastViewedAt: null };
       closing.set(run.id, state);
-      const location = run.location ?? run.rex;
-      if (!location) continue;
-      const looking = (await readTabState(location, run.label)).viewing;
+      const looking = tab.viewing;
       if (looking) state.lastViewedAt = now;
       if (closeDecision({ ...state, viewing: looking, now, graceMs }) === "close") {
         await dismiss(run);
+        tabs.delete(run.id);
         closing.delete(run.id);
       }
     }
@@ -385,19 +388,26 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     if (refreshing) return;
     refreshing = true;
     try {
-      const runs = ownedRuns(await listRuns(), ctx.sessionManager.getSessionId());
+      const records = await listRuns();
+      const runs = ownedRuns(records, ctx.sessionManager.getSessionId());
       for (const run of runs) {
         if (isTerminal(run.lifecycle) && run.process.state !== "exited" && run.rex) {
           await reconcile(run);
           await writeRun(run);
         }
       }
-      await autoClose(runs);
+      const sessions = new Map<string, Record<string, unknown>>();
+      const tabs = new Map<string, TabView>();
+      for (const run of runs) {
+        const tab = await clearEligible(run, sessions);
+        if (tab) tabs.set(run.id, tab);
+      }
+      await autoClose(runs, tabs);
       const lines = treeOrder(runs.filter(live)).slice(0, 20).map(statusLine);
-      const clearable = (await Promise.all(runs.map(clearEligible))).filter(Boolean).length;
+      const clearable = tabs.size;
       if (clearable)
         lines.push(`${clearable} exited completed child terminal(s): /subagents clear`);
-      const pending = (await views(ctx)).filter((run) =>
+      const pending = (await views(ctx, records)).filter((run) =>
         shouldAppend(run, ctx.sessionManager.getSessionId()),
       ).length;
       if (pending) lines.push(`${pending} background result(s) pending delivery`);
@@ -415,7 +425,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       void refresh(ctx);
     }, 2000);
     if (event.reason === "reload") {
-      for (const run of await sessionRuns(ctx)) {
+      for (const run of sessionRuns(ctx, await listRuns())) {
         if (!run.background || (await readClaim(run.paths.claim)) === "taken_over") continue;
         if (
           isTerminal(run.lifecycle) &&
@@ -568,9 +578,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       }
       const selected = args === "all" ? all.filter(live) : owned;
       for (const run of selected.slice(0, 30)) {
-        if (run.rex) run.location = await locate(run.rex.blockId, run.location ?? run.rex);
+        if (run.rex && run.tabClosedAt === undefined)
+          run.location = await locate(run.rex.blockId, run.location ?? run.rex);
       }
-      const pending = (await views(ctx)).filter((run) =>
+      const pending = (await views(ctx, all)).filter((run) =>
         shouldAppend(run, ctx.sessionManager.getSessionId()),
       ).length;
       const text = cappedText(
@@ -585,7 +596,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
                   ? "Orphaned: immediate parent is gone; outcome retained on disk"
                   : "",
                 `Run ${run.id}; checkout ${run.checkoutRoot}; model ${run.effective.provider}/${run.effective.model} (${run.effective.thinking})`,
-                `Rex ${JSON.stringify(run.location)}; process ${JSON.stringify(run.process)}`,
+                `Rex ${run.tabClosedAt !== undefined ? "closed" : JSON.stringify(run.location)}; process ${JSON.stringify(run.process)}`,
                 `Result ${run.paths.result}; events ${run.paths.events}; session ${run.sessionFile ?? run.paths.sessionDir}`,
               ].join("\n"),
             )

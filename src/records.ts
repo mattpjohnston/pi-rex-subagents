@@ -141,6 +141,7 @@ export const RunRecord = Type.Object(
     updatedAt: Type.Number(),
     loadedAt: Type.Union([Type.Number(), Type.Null()]),
     finishedAt: Type.Union([Type.Number(), Type.Null()]),
+    tabClosedAt: Type.Optional(Type.Number()),
   },
   object,
 );
@@ -257,6 +258,7 @@ export async function writeRun(run: RunRecord): Promise<void> {
       if (!isMissing(error)) throw error;
       return null;
     });
+    if (saved?.tabClosedAt !== undefined) run.tabClosedAt = saved.tabClosedAt;
     if (saved?.activity) run.activity = saved.activity;
     if (saved?.activity?.effective) run.effective = saved.activity.effective;
     run.updatedAt = Date.now();

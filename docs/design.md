@@ -29,6 +29,8 @@ Rex doesn't report which session the app is showing, so the extension treats a t
 
 A tab whose label no longer matches the subagent's label is kept. `rex/keep.lua` (the `subagents_keep` action) and `/subagents keep` add `📌` to the label, and renaming or sharing the tab changes it too. The label is the only record of this, so you can see it in the sidebar and undo it by removing the pin.
 
+Once Rex confirms a finished tab is gone, the run record says so and the parent stops asking Rex about it. This survives a reload.
+
 Only completed subagents that were never taken over close automatically. Failed, cancelled, and taken-over ones keep their tabs so you can see what happened. The parent's Pi does the closing, so if the parent has exited, its subagents' tabs stay until a `/subagents clear`.
 
 ## Runs
