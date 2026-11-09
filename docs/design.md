@@ -140,7 +140,7 @@ The parent waits at most 10 seconds for an ack. Writing the message alone is nev
 
 ## Later additions
 
-- **Rex additions.** A `subagents.next_waiting` Rex action that jumps to the oldest waiting child, and an OSC 9 desktop notice when a child starts waiting.
+- **Rex additions.** `rex/next_waiting.lua` registers `subagents_next_waiting`. It reads live run records, picks the oldest human wait, and selects that block. `/subagents go next` runs the same script. The reporter writes one OSC 9 notice per wait to the child terminal. The parent follows `child_exited` and `program_status_changed` on `rex events --all --json`, filtered by block ID, and reconciles through block liveness if that stream drops.
 
 ## Models
 

@@ -44,6 +44,7 @@ CI runs the same checks and the models on every push.
 | `nesting-inbox`                                                          | Cancelled descendant plus accepted unsent message persisted in one turn, both processed before publication                                                     |
 | `nesting-races`                                                          | Public descendant list/cancel, in-flight Rex reply cleanup, orphan retention without upward delivery                                                           |
 | `control-races`                                                          | Deterministic settlement orderings, takeover's pending messages and cancellation refusal, hung result cancellation, parent crash after cancellation claim      |
+| `attention`                                                              | Oldest-wait selection from another session, OSC 9 once per wait, same-session move, dropped event stream reconciled through liveness                           |
 
 Every run gets its own scratch directory under the system temp directory, its own state and session directories, and Rex sessions labelled `pirs-h-`. Teardown removes only the sessions this run created, and removes the scratch directory, even when the run fails. A run refuses to start if a `pirs-h-` session is left over from an earlier run. Run output is archived under the git-ignored `.harness-runs/`.
 
@@ -56,6 +57,8 @@ Each run hashes Pi's `settings.json`, any installed `extensions/subagent.ts`, an
 Free models have daily request limits. If a scenario fails with HTTP 429, wait for the limit to reset or switch `HARNESS_MODEL` instead of rerunning it. Keep the machine awake during long runs (`caffeinate -i` on macOS); a sleep mid-run fails the scenario on timeouts or connection errors.
 
 The trust scenario expects Pi's default `"ask"` trust policy. It checks that the selected answer is "this session only" before pressing Enter, so it never saves a trust decision.
+
+The installed Rex cannot move a block or a window into another session. `attention` therefore checks a same-session move to another tab. The acceptance check for a child moved to another session waits on a Rex version that can do that move. The parent already follows `rex events --all --json`, so that case needs no extension change when Rex gains it.
 
 ## Testing hooks
 

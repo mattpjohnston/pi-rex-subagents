@@ -83,7 +83,16 @@ Ask children for a short final report, and have bulk output written to a file th
 
 Closing a child's tab never deletes its result, session, or records.
 
-When a child stops for a human, for example on a dialog or Pi's project-trust prompt, the parent shows a notice naming the child and the `/subagents go` command.
+When a child stops for a human, for example on a dialog or Pi's project-trust prompt, the parent shows a notice naming the child and the `/subagents go` command. The child also writes one OSC 9 notification to its own terminal, once per wait. Rex may show that as a banner. It is a notification, not a status record.
+
+`/subagents go next` runs `rex/next_waiting.lua`, which selects the oldest waiting child of any parent. Load that file from Rex's `init.lua` to bind the same action to a key. This extension does not edit `init.lua`.
+
+```lua
+dofile("/absolute/path/to/pi-rex-subagents/rex/next_waiting.lua")
+rex.bind("ctrl+shift+n", "subagents_next_waiting")
+```
+
+Run `rex config reload` after saving. The action name has no dot: Rex reserves dotted names for clients and block types.
 
 ### Parent controls
 

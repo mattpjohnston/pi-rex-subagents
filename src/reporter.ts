@@ -1,4 +1,4 @@
-import { appendFileSync } from "node:fs";
+import { appendFileSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -28,11 +28,20 @@ import { outcomeOf, packDelivery, type DeliveryOutcome } from "./delivery.ts";
 import { inspectViolations, readViolations, type ToolSnapshot } from "./restrictions.ts";
 import { deriveOutcome } from "./results.ts";
 import { park, readLimits, tryWake, updateMemberProvider, wake } from "./admission.ts";
+import { AttentionNotices } from "./attention.ts";
 
 export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
   process.umask(0o077);
   let shutdown = false;
   let halted = false;
+  const notices = new AttentionNotices(run.label, (sequence) => {
+    try {
+      // Same stdout the TUI uses for OSC 7501. A closed terminal must not fail the child.
+      writeSync(1, sequence);
+    } catch {
+      /* Advisory only; the waiting record is the source of truth. */
+    }
+  });
   if (run.access === "read") registerGitRead(pi);
   const log = (type: string, data: Record<string, unknown> = {}): void => {
     appendFileSync(run.paths.events, `${JSON.stringify({ type, at: Date.now(), data })}\n`, {
@@ -236,6 +245,7 @@ export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
 
   pi.on("project_trust", (event) => {
     log("project_trust", { cwd: event.cwd });
+    notices.trust();
     return { trusted: "undecided" };
   });
   const toolSnapshots = (): ToolSnapshot[] =>
@@ -288,6 +298,7 @@ export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
     process.exit(1);
   };
   pi.on("session_start", async (event, ctx) => {
+    notices.end();
     const winner = await readClaim(run.paths.claim);
     log("session_start", {
       reason: event.reason,
@@ -371,9 +382,11 @@ export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
   });
   pi.on("ui_prompt_start", (event) => {
     log("ui_prompt_start", { kind: event.kind, title: event.title ?? "Pi dialog" });
+    notices.start(event.title ?? "Pi dialog");
   });
   pi.on("ui_prompt_end", () => {
     log("ui_prompt_end");
+    notices.end();
   });
   pi.on("tool_call", async (event, ctx) => {
     if (process.env.PI_SUBAGENTS_LOG_TOOLS)
@@ -418,6 +431,7 @@ export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
   });
   pi.on("session_shutdown", async (event, ctx) => {
     log("session_shutdown", { reason: event.reason });
+    notices.end();
     clearInterval(timer);
     context = undefined;
     if (event.reason === "quit") {

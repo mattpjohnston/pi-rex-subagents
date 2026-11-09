@@ -51,7 +51,7 @@ import {
   runForeground,
   startBackground,
 } from "./launch.ts";
-import { RexEvents, locate, rexJson } from "./rex.ts";
+import { RexEvents, locate, object, rexJson } from "./rex.ts";
 import { cappedText, resultText } from "./results.ts";
 
 const entry = fileURLToPath(import.meta.url);
@@ -428,7 +428,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   });
   pi.registerCommand("subagents", {
     description:
-      "List this parent's runs; all lists every live child; go <label> selects its tab; cancel <label|run-id> cancels a background run",
+      "List this parent's runs; all lists every live child; go <label> selects its tab; go next selects the oldest wait across parents; cancel <label|run-id> cancels a background run",
     handler: async (args, ctx) => {
       const all = treeOrder(await listRuns());
       const owned = ownedRuns(all, ctx.sessionManager.getSessionId());
@@ -477,6 +477,22 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         await refresh(ctx);
         return;
       }
+      if (args === "go next") {
+        const selected = object(
+          await rexJson([
+            "do",
+            fileURLToPath(new URL("../rex/next_waiting.lua", import.meta.url)),
+            "--json",
+          ]),
+        );
+        ctx.ui.notify(
+          selected.status === "selected"
+            ? "Selected the oldest waiting subagent"
+            : `No waiting subagent (${String(selected.status)})`,
+          selected.status === "selected" ? "info" : "warning",
+        );
+        return;
+      }
       if (args.startsWith("go ")) {
         const label = args.slice(3).trim();
         const matches = all.filter(
@@ -506,7 +522,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       }
       if (args && args !== "all") {
         ctx.ui.notify(
-          "Usage: /subagents [all | go <label> | cancel <label|run-id> | clear | dismiss <label|run-id>]",
+          "Usage: /subagents [all | go <label|next> | cancel <label|run-id> | clear | dismiss <label|run-id>]",
           "error",
         );
         return;
