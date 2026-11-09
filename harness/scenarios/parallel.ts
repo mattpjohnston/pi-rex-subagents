@@ -143,7 +143,7 @@ export default async function parallel(): Promise<void> {
         "parallel item 6 guard: PASS; a different parent's live writer blocks edit/write through a symlink and nearest-existing ancestor; names run + checkout; outside edit/write and inside bash remain allowed, persisted file outcomes verified",
       );
       console.log(
-        "DEFERRED: reader starvation checks to phase 3; background parts of item 6 to phase 4",
+        "Reader starvation is covered by readers; background batches are covered by background.",
       );
     } finally {
       await stop();

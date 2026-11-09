@@ -36,6 +36,13 @@ CI runs the same checks and the models on every push.
 | `background`, `background-cap`, `background-reload`, `background-switch` | Background delivery, the cap, reload and crash recovery, session transitions                                                                                   |
 | `compose`                                                                | Investigation, implementation, review, and worktree compositions through the public tools                                                                      |
 | `control`                                                                | Model-driven list/message/cancel, cross-parent scoping, real Rex status, working steering, idle prompting, dialog safety, stale lock, queued/live cancellation |
+| `nesting-model`                                                          | Real model-driven same-checkout foreground read review at active=1, model override, immediate-parent result                                                    |
+| `nesting`                                                                | Sibling-tool join-wait, write guard, descendant priority, internal FIFO, busy coalescing before publication                                                    |
+| `nesting-capacity`                                                       | Coordinator/worker/review parking, edited ceilings, wake-before-ticket priority, parked and descendant takeover                                                |
+| `nesting-human`                                                          | Human typing and provider changes clear parking and count immediately above the ceiling                                                                        |
+| `nesting-cycle`                                                          | Cross-tree and wrapper wait-cycle refusal, inspect defaults/write refusal, depth-limit toolsets                                                                |
+| `nesting-inbox`                                                          | Cancelled descendant plus accepted unsent message persisted in one turn, both processed before publication                                                     |
+| `nesting-races`                                                          | Public descendant list/cancel, in-flight Rex reply cleanup, orphan retention without upward delivery                                                           |
 | `control-races`                                                          | Deterministic settlement orderings, takeover's pending messages and cancellation refusal, hung result cancellation, parent crash after cancellation claim      |
 
 Every run gets its own scratch directory under the system temp directory, its own state and session directories, and Rex sessions labelled `pirs-h-`. Teardown removes only the sessions this run created, and removes the scratch directory, even when the run fails. A run refuses to start if a `pirs-h-` session is left over from an earlier run. Run output is archived under the git-ignored `.harness-runs/`.
@@ -65,3 +72,13 @@ These environment variables exist for the harness. They are not user features.
 - `subagents:test-cancel-claimed` lets the harness SIGKILL its own disposable parent between a durable cancellation claim and signalling. `HARNESS_CANCEL_CRASH=1` enables that listener only in the harness extension.
 
 `pnpm exec vitest run test/inbox.test.ts --reporter=verbose --disableConsoleIntercept` prints the exhaustive protocol differential's state count and runtime. `models/export_protocol.py` exports every reachable current state, not a random sample. The tests also exercise private ack files, persisted-user consumption, timeout handling, ancestry scoping, and parent-only stale-lock recovery without a reporter helping.
+
+Phase-six deterministic plans replace assistant tool-call batches rather than
+wrapping launches in a holding tool, which would itself hold join-wait. A
+foreground wrapper has a separate cycle-refusal check. A real provider runs on
+every turn; assertions read records, events, and persisted session rows, not the
+model's wording. `nesting-model` uses no fixed plan.
+
+The live graph adds started-tool join blockers and known caller-dependency edges
+to the admission model's facts. The same pure TypeScript admission core and
+Python differential runner remain the oracle; no expected model result changed.

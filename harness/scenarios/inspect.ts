@@ -109,10 +109,9 @@ export default async function inspect(): Promise<void> {
       console.log(
         `inspect item 14 tools: PASS; edit/write absent, bash present, MCP servers in the child session: ${mcpNames.join(", ")}`,
       );
+      assert(listed.includes("subagent") && listed.includes("subagent_control"));
       console.log(
-        listed.includes("subagent")
-          ? "inspect nested write: our child does not register subagent; a discovered user extension still exposes that name. Nested admission is phase 6."
-          : "inspect nested write: no subagent tool in the child. Nested admission is phase 6.",
+        "inspect nesting tools: PASS; launch and control exposed below the depth limit; write-child refusal is covered by nesting-cycle",
       );
 
       const parentPath = join(checkout, "parent-marker");
@@ -306,9 +305,6 @@ export default async function inspect(): Promise<void> {
       assert.equal(budget.state, "unknown");
       assert.match(budget.reason ?? "", /budget/);
       console.log(`inspect item 14 budget: PASS; checkout unknown (${budget.reason})`);
-      console.log(
-        "inspect nested launch: not admitted here; phase 6 owns nesting. This extension does not register subagent in children.",
-      );
     } finally {
       await stop();
     }

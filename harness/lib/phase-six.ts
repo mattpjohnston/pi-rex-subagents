@@ -1,20 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { delimiter, dirname, join } from "node:path";
-import { Type } from "typebox";
 import { admissionSnapshot, readLimits } from "../../src/admission.ts";
 import { withAdmissionLock } from "../../src/claims.ts";
-import { LaunchInput } from "../../src/launch.ts";
+import type { LaunchInput } from "../../src/launch.ts";
 import { type RunRecord } from "../../src/records.ts";
 import { current, events, maybeFile, records, start, until } from "./phase-one.ts";
 import { entries, resultsEntries } from "./phase-four.ts";
 import { object } from "./rex.ts";
 import { repo, type Run } from "./run.ts";
 
-export const FixedCall = Type.Object({
-  name: Type.String(),
-  arguments: Type.Record(Type.String(), Type.Unknown()),
-});
 export type FixedCall = { name: string; arguments: Record<string, unknown> };
 export type Batch = { waitFor?: string; calls: FixedCall[] };
 export const call = (name: string, args: Record<string, unknown> = {}): FixedCall => ({
@@ -102,7 +97,4 @@ export async function toolResults(record: RunRecord) {
 export async function assertNoStart(run: Run, record: RunRecord): Promise<void> {
   assert.equal((await current(run, record.id)).loadedAt, null);
   assert(!(await events(record)).some((e) => e.type === "child_loaded"));
-}
-export async function outputText(record: RunRecord): Promise<string> {
-  return readFile(record.paths.events, "utf8");
 }

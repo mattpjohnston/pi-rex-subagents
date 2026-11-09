@@ -131,7 +131,7 @@ export default async function admission(): Promise<void> {
       // Tightening a limit does not kill existing work; it gates the next admission.
       await writeFile(
         join(run.state, "limits.json"),
-        JSON.stringify({ active: 2, providers: { openrouter: 1 } }),
+        JSON.stringify({ active: 2, providers: { [firstLive.effective.provider]: 1 } }),
       );
       await release(await hold(run, firstLive));
       await finished(run, firstLive);
@@ -173,7 +173,7 @@ export default async function admission(): Promise<void> {
         "admission malformed limits: PASS; launch blocked with file-naming error, no child created",
       );
       console.log(
-        "DEFERRED to phase 3, as permitted by brief: reader overlap, readers behind writer, and waiting-writer starvation by newer readers (no reader testing hook added)",
+        "Reader overlap, FIFO behind writers, and starvation are covered separately by the readers scenario.",
       );
     } finally {
       await stop();
