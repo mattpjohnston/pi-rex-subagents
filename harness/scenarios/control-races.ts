@@ -42,7 +42,21 @@ export default async function controlRaces(): Promise<void> {
     await userMessageWithId(record, accepted.messageId);
     await finished(run, record);
     const resultBefore = await readFile(record.paths.result, "utf8");
-    assert.match(resultBefore, /SETTLEMENT_ORDER_APPLIED/);
+    // Protocol evidence, not model wording: consumed, then a later settlement, then the claim.
+    const ack = await readAck(record, accepted.messageId);
+    assert.equal(ack?.state, "consumed");
+    const timeline = (await readFile(record.paths.events, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { type: string; at: number });
+    const claimedAt = timeline.find((event) => event.type === "result_claimed")?.at;
+    assert(claimedAt && ack?.state === "consumed" && ack.consumedAt < claimedAt);
+    assert(
+      timeline.some(
+        (event) => event.type === "agent_settled" && event.at > (ack?.consumedAt ?? Infinity),
+      ),
+      "the child ran a turn for the message before publishing",
+    );
     const refused = await sendInboxMessage(
       await current(run, record.id),
       record.parentSessionId,
