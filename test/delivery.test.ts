@@ -146,7 +146,19 @@ it("decides replacement, cancellation, and append without treating takeover as o
     delivered,
   );
   expect(blocksReplacement([live, taken], "parent")).toBe(true);
-  expect(blocksReplacement([taken], "parent")).toBe(false);
+  expect(blocksReplacement([taken], "parent")).toBe(true);
+  expect(
+    blocksReplacement(
+      [
+        transitionView(
+          run({ id: id("t"), lifecycle: "taken_over", process: { state: "live", pid: 4 } }),
+          "taken_over",
+          new Set([id("t")]),
+        ),
+      ],
+      "parent",
+    ),
+  ).toBe(false);
   expect(blocksReplacement([pending], "parent")).toBe(true);
   expect(shouldCancel(live, "parent")).toBe(true);
   expect(shouldCancel(queued, "parent")).toBe(true);
@@ -156,7 +168,7 @@ it("decides replacement, cancellation, and append without treating takeover as o
   expect(shouldAppend(live, "parent")).toBe(false);
   expect(outcomeReady(run({ process: { state: "unresolved", pid: 9 } }), "cancelled")).toBe(true);
   expect(outcomeReady(run(), "result")).toBe(false);
-  expect(outcomeReady(run(), "taken_over")).toBe(false);
+  expect(outcomeReady(run(), "taken_over")).toBe(true);
   expect(outcomeReady(run({ process: { state: "exited", code: 0 } }), "taken_over")).toBe(true);
   expect(outcomeReady(run({ background: false }), "result")).toBe(false);
 });

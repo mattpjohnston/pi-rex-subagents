@@ -68,7 +68,7 @@ These environment variables exist for the harness. They are not user features.
 - `PI_SUBAGENTS_CHILD_EXTENSIONS` lists extra extension paths passed to children, such as the harness's dialog, hold, and fault tools.
 - `PI_SUBAGENTS_LOG_TOOLS` makes child reporters log every tool call with its arguments.
 - `PI_SUBAGENTS_FINGERPRINT_MAX_BYTES` and `PI_SUBAGENTS_FINGERPRINT_MAX_MS` lower the inspect fingerprint budget.
-- `PI_SUBAGENTS_COALESCE_MS` overrides the one-second idle delivery window.
+- `PI_SUBAGENTS_COALESCE_MS` overrides the three-second idle delivery window.
 - `PI_SUBAGENTS_ADMISSION_METRICS` records admission lock timings.
 - The `subagents:test-takeover-claimed` event on Pi's extension bus lets a harness extension delay the takeover acknowledgement after the claim.
 - `subagents:test-settlement` provides a test-only boundary object with `before` (an awaitable barrier) and `hold` (stay idle for this boundary). The harness uses it to force pre-publication messaging and a held-idle child without registering another settlement owner.

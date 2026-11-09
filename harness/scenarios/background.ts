@@ -128,8 +128,9 @@ export default async function background(): Promise<void> {
 
     const idleRoot = await directory(run, "idle");
     const idlePlans = [0, 1, 2, 3, 4].map((index) => plan(`idle-${index}`, idleRoot));
-    // Each child still makes one model reply after release, and that latency spreads past 1 s.
-    const idle = await launch(run, "idle", idlePlans, { PI_SUBAGENTS_COALESCE_MS: "5000" });
+    // Children finish 1.7 to 5 s apart after release (their own model reply), so pin a wide
+    // window: this case proves coalescing, not the default length.
+    const idle = await launch(run, "idle", idlePlans, { PI_SUBAGENTS_COALESCE_MS: "15000" });
     const idleRuns = await idle.children();
     // A tool-call message is also an assistant message, so wait for the turn itself to end.
     await turnEnded(run, "idle");

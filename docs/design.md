@@ -111,9 +111,9 @@ The protocol model covers one run, not a descendant graph. Its exhaustive differ
 
 ## Background delivery
 
-A background launch returns its run ID once the run is admitted or queued. Its outcome becomes pending once its claim exists and its process exit is confirmed, or once the shutdown grace ends with the process still alive. Pending state lives on disk, derived from the run records and the parent session.
+A background launch returns its run ID once the run is admitted or queued. Its outcome becomes pending once its claim exists and its process exit is confirmed, or once the shutdown grace ends with the process still alive. A takeover is pending at once, so the parent learns of it without waiting for the human's session to end. Pending state lives on disk, derived from the run records and the parent session.
 
-Results are coalesced. While the parent is busy, nothing is sent. When it settles, every pending outcome goes in one message. While it is idle, the extension waits about a second for siblings that finish close together. Each delivery is one custom message with type `subagent-results`, listing its run IDs, capped at 50 KB or 2000 lines as a whole. Entries that do not fit become run ID, outcome, and result path.
+Results are coalesced. While the parent is busy, nothing is sent. When it settles, every pending outcome goes in one message. While it is idle, the extension waits about three seconds for siblings that finish close together. Each delivery is one custom message with type `subagent-results`, listing its run IDs, capped at 50 KB or 2000 lines as a whole. Entries that do not fit become run ID, outcome, and result path.
 
 An outcome counts as delivered when a `subagent-results` entry naming it is on the parent's active branch. Entries a compaction summarized still count. On every `session_start` and `session_tree`, the extension delivers any pending outcome that is not on the active branch, so `/tree` to a branch without the delivery sends it again there. If the branch ends with a delivery that no response follows, as a crash between writing it and its turn would leave, reconciliation starts one turn with a short note instead of resending.
 

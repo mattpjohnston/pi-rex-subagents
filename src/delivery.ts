@@ -13,7 +13,7 @@ export const RESULTS_TYPE = "subagent-results";
 export const NOTE_TYPE = "subagent-results-note";
 export const DELIVERY_NOTE =
   "Background results are already in this session. Continue from that delivery; do not expect them to be sent again.";
-export const COALESCE_MS = 1000;
+export const COALESCE_MS = 3000;
 
 export interface DeliveryOutcome {
   runId: string;
@@ -115,13 +115,14 @@ export function endsWithUnansweredDelivery(branch: readonly BranchNode[]): boole
 }
 
 /**
- * Exit or an ended shutdown grace makes a claimed outcome pending. A live taken-over process
- * is not pending: the spec keeps that process running, and delivery waits until it exits.
+ * Exit or an ended shutdown grace makes a claimed outcome pending. A takeover is pending at
+ * once: the human may keep that session open indefinitely, and the parent should not wait.
  * A terminal record with no claim is a startup or reporter failure and is still an outcome.
  */
 export function outcomeReady(run: RunRecord, claim: Claim | null): boolean {
   if (!run.background) return false;
   const settled = run.process.state === "exited" || run.process.state === "unresolved";
+  if (claim === "taken_over") return true;
   if (claim) return settled;
   return settled && isTerminal(run.lifecycle);
 }
@@ -170,8 +171,8 @@ export function parentOwnedLive(run: TransitionView): boolean {
 export function blocksReplacement(runs: readonly TransitionView[], sessionId: string): boolean {
   return runs.some(
     (run) =>
-      owned(run, sessionId) &&
-      (parentOwnedLive(run) || (run.background && run.ready && !run.delivered)),
+      (owned(run, sessionId) && parentOwnedLive(run)) ||
+      (run.parentSessionId === sessionId && run.background && run.ready && !run.delivered),
   );
 }
 export function shouldCancel(run: TransitionView, sessionId: string): boolean {
