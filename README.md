@@ -104,12 +104,18 @@ The parent model has one `subagent_control` tool:
 
 Write and inspect children get `subagent` and `subagent_control` below the depth limit. Read children never get them. Inspect children default nested launches to inspect and cannot launch writers. Members cannot edit/write their checkout while a live descendant shares their reservation; bash is not blocked.
 
+### Finished tabs
+
+A child that completes closes its own tab 60 seconds after it exits. The tab never closes while it is the active tab of its session, so one you are reading stays open, and it closes a few seconds after you switch away. Failed, cancelled, incomplete, and taken-over children keep their tabs; `/subagents clear` or `/subagents dismiss` closes those. A closed tab loses nothing: the transcript, result, and records stay on disk, and `continueFrom` still works.
+
+Set `closeCompletedAfter` in `limits.json` to change the delay in seconds, or to `false` to keep every tab.
+
 ### Limits
 
 Admission reads `limits.json` in the state directory on every decision, so edits apply to the next launch:
 
 ```json
-{ "active": 4, "depth": 2, "providers": { "openrouter": 2 } }
+{ "active": 4, "depth": 2, "providers": { "openrouter": 2 }, "closeCompletedAfter": 60 }
 ```
 
 - `active` is the most live children across every parent on the machine. The default is 4.

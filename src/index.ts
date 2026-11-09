@@ -8,7 +8,7 @@ import {
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { contains } from "./admission-core.ts";
-import { park, readLimits, wake, writerOnPath } from "./admission.ts";
+import { closeCompletedAfterMs, park, readLimits, wake, writerOnPath } from "./admission.ts";
 import { canonicalTarget, checkoutRoot } from "./checkout.ts";
 import { cancelControlled, ownedRuns, registerControl, treeOrder } from "./control.ts";
 import { readClaim } from "./claims.ts";
@@ -29,7 +29,7 @@ import {
 } from "./delivery.ts";
 import { claimRuntime } from "./load-guard.ts";
 import { workingDirectory } from "./settings.ts";
-import { clearEligible, dismiss } from "./terminals.ts";
+import { clearEligible, closeDecision, dismiss, viewing } from "./terminals.ts";
 import { registerReporter } from "./reporter.ts";
 import {
   errorText,
@@ -358,6 +358,29 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     await deliver(ctx, "append");
     return;
   };
+  // Grace and viewing timestamps live in memory: a reload only restarts the grace period.
+  const closing = new Map<string, { eligibleSince: number; lastViewedAt: number | null }>();
+  const autoClose = async (runs: RunRecord[]) => {
+    const graceMs = await closeCompletedAfterMs();
+    if (graceMs === null) return;
+    for (const run of runs) {
+      if (!(await clearEligible(run))) {
+        closing.delete(run.id);
+        continue;
+      }
+      const now = Date.now();
+      const state = closing.get(run.id) ?? { eligibleSince: now, lastViewedAt: null };
+      closing.set(run.id, state);
+      const location = run.location ?? run.rex;
+      if (!location) continue;
+      const looking = await viewing(location);
+      if (looking) state.lastViewedAt = now;
+      if (closeDecision({ ...state, viewing: looking, now, graceMs }) === "close") {
+        await dismiss(run);
+        closing.delete(run.id);
+      }
+    }
+  };
   const refresh = async (ctx: ExtensionContext) => {
     if (refreshing) return;
     refreshing = true;
@@ -369,6 +392,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
           await writeRun(run);
         }
       }
+      await autoClose(runs);
       const lines = treeOrder(runs.filter(live)).slice(0, 20).map(statusLine);
       const clearable = (await Promise.all(runs.map(clearEligible))).filter(Boolean).length;
       if (clearable)

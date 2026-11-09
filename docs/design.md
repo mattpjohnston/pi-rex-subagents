@@ -21,6 +21,8 @@ Child tabs sit in the parent's session, not a dedicated one, for two reasons. Re
 
 Children are launched with direct argv (`rex window new ... --shell none -- pi ...`), never by typing into a shell. Rex has no environment option, so the few values passed to a child go through `/usr/bin/env K=V` in its argv. Anyone on the machine can read those with `ps`, so they are never secrets. Provider credentials stay in Pi's own storage.
 
+**Finished tabs.** A completed child closes its tab after a grace period (60 seconds by default, `closeCompletedAfter` in `limits.json`). Rex does not report which session the app is showing, so a tab counts as viewed while it is the active tab of its session. A viewed tab is never closed, and a tab you leave waits a few more seconds so tabbing past it does not close it. The check errs towards keeping tabs. Only completed, never-taken-over children with confirmed exit close automatically; other outcomes keep their tab as evidence. The parent's runtime does the closing, so tabs of a parent that has exited stay until `/subagents clear`.
+
 ## Run record, claim, and lock
 
 Each run has one directory under `runs/<run-id>/` in the state directory, with private permissions. It holds:

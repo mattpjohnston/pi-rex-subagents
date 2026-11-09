@@ -36,6 +36,9 @@ const LimitsFile = Type.Object(
     active: Type.Optional(positive),
     depth: Type.Optional(positive),
     providers: Type.Optional(Type.Record(Type.String({ minLength: 1 }), positive)),
+    closeCompletedAfter: Type.Optional(
+      Type.Union([Type.Integer({ minimum: 0 }), Type.Literal(false)]),
+    ),
   },
   { additionalProperties: false },
 );
@@ -47,6 +50,17 @@ export async function readLimits(): Promise<Limits> {
   } catch (error) {
     if (isMissing(error)) return { active: 4, depth: 2, providers: {} };
     throw new Error(`Invalid admission limits ${path}: ${errorText(error)}`, { cause: error });
+  }
+}
+/** Seconds a completed child's tab stays before closing, from limits.json; false keeps tabs. */
+export async function closeCompletedAfterMs(): Promise<number | null> {
+  const path = join(stateDir(), "limits.json");
+  try {
+    const value = parse(LimitsFile, await readJson(path)).closeCompletedAfter ?? 60;
+    return value === false ? null : value * 1000;
+  } catch (error) {
+    if (isMissing(error)) return 60_000;
+    throw new Error(`Invalid limits ${path}: ${errorText(error)}`, { cause: error });
   }
 }
 const Member = Type.Object(

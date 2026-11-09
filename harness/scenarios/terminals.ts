@@ -11,6 +11,8 @@ import { locate, observeProcess } from "../../src/rex.ts";
 
 export default async function terminals(): Promise<void> {
   await withRun("terminals", async (run) => {
+    // This scenario tests manual clear and dismissal; autoclose covers automatic closing.
+    await writeFile(join(run.state, "limits.json"), JSON.stringify({ closeCompletedAfter: false }));
     const plan = [];
     for (let i = 0; i < 4; i++)
       plan.push({
