@@ -78,10 +78,15 @@ async function assertShown(
   assert.equal(view.active_window_id, shown.location.windowId);
   assert.equal(window?.focused_block_id, shown.location.blockId);
   assert.equal(object(block.block).owner, app);
-  assert(shown.stamp, "app has not requested a size for the selected block");
-  if (previous)
-    assert(shown.stamp > previous, `stamp ${shown.stamp} did not advance past ${previous}`);
-  return shown.stamp;
+  const deadline = Date.now() + 8_000;
+  let stamp = shown.stamp;
+  while ((!stamp || (previous !== null && stamp <= previous)) && Date.now() < deadline) {
+    await delay(200);
+    stamp = (await shownAt(run, record.rex.blockId, shown.location, app)).stamp;
+  }
+  assert(stamp, "app has not requested a size for the selected block");
+  if (previous) assert(stamp > previous, `stamp ${stamp} did not advance past ${previous}`);
+  return stamp;
 }
 
 async function serverIdentity(): Promise<{ pid: number; startedAt: string }> {
@@ -256,8 +261,15 @@ export default async function attention(): Promise<void> {
     const stream = watchRex(run);
     try {
       const app = await appClient(run);
+      // Sibling directories, not the shared scratch: a writer on a parent path blocks a child path.
+      const dialogCwd = join(run.scratch, "dialog-project");
+      const trustCwd = join(run.scratch, "trust-project");
+      await mkdir(dialogCwd, { recursive: true, mode: 0o700 });
+      await mkdir(join(trustCwd, ".pi"), { recursive: true, mode: 0o700 });
+      await writeFile(join(trustCwd, ".pi", "settings.json"), "{}", { mode: 0o600 });
       const dialog = await start(run, {
         label: "attention-dialog",
+        cwd: dialogCwd,
         task: "Call ask_human twice, one call at a time, waiting for each answer. Then report briefly. No other tools.",
       });
       const initial = await dialog.record();
@@ -268,12 +280,9 @@ export default async function attention(): Promise<void> {
       assert(first.rex);
       assert(first.waiting);
       const dialogRex = first.rex;
-      const cwd = join(run.scratch, "attention-trust");
-      await mkdir(join(cwd, ".pi"), { recursive: true, mode: 0o700 });
-      await writeFile(join(cwd, ".pi", "settings.json"), "{}", { mode: 0o600 });
       const trust = await start(run, {
         label: "attention-trust",
-        cwd,
+        cwd: trustCwd,
         task: "Reply briefly without tools.",
       });
       const trustInitial = await trust.record();
