@@ -43,12 +43,7 @@ export async function parentArgv(
     "/usr/bin/env",
     `PI_SUBAGENTS_STATE_DIR=${run.state}`,
     `HARNESS_TOOL_LOG=${join(run.out, `${label}-tools.jsonl`)}`,
-    ...[
-      "PI_SUBAGENTS_PI",
-      "PI_SUBAGENTS_REX",
-      "PI_CODING_AGENT_DIR",
-      "PI_SUBAGENTS_ADMISSION_METRICS",
-    ]
+    ...["PI_SUBAGENTS_PI", "PI_SUBAGENTS_REX", "PI_CODING_AGENT_DIR"]
       .filter((key) => process.env[key])
       .map((key) => `${key}=${process.env[key]}`),
     ...Object.entries(env).map(([key, value]) => `${key}=${value}`),

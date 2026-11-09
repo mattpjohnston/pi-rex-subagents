@@ -1,4 +1,4 @@
-import { appendFile, readdir, unlink } from "node:fs/promises";
+import { readdir, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { Type, type Static } from "typebox";
@@ -28,7 +28,7 @@ import {
   writeRun,
   RunRecord,
 } from "./records.ts";
-import { observeProcess, traceRex } from "./rex.ts";
+import { observeProcess } from "./rex.ts";
 
 const positive = Type.Integer({ minimum: 1 });
 const LimitsFile = Type.Object(
@@ -122,18 +122,15 @@ export async function updateMemberProvider(runId: string, provider: string): Pro
   });
 }
 /** Called only under admission lock. Unknown launch/liveness never frees a reservation. */
-async function collect(): Promise<{ reservations: Reservation[]; checked: number }> {
-  let checked = 0;
+async function collect(): Promise<{ reservations: Reservation[] }> {
   const reservations = await readReservations();
   for (const reservation of reservations) {
     const kept = [];
     for (const member of reservation.members) {
       const record = await readRun(member.runId);
       let exited = record.process.state === "exited";
-      if (record.rex) {
-        checked += 1;
+      if (record.rex)
         exited = (await observeProcess(record.location ?? record.rex)).process.state === "exited";
-      }
       if (!exited) kept.push(member);
     }
     reservation.members = kept;
@@ -142,7 +139,6 @@ async function collect(): Promise<{ reservations: Reservation[]; checked: number
   }
   return {
     reservations: reservations.filter((reservation) => reservation.members.length),
-    checked,
   };
 }
 /** Called under admission. Keep exited ancestry in the graph even after membership ends. */
@@ -222,10 +218,8 @@ export async function claimedAncestor(run: RunRecord): Promise<string | null> {
   }
   return null;
 }
-async function pass(
-  limits: Limits,
-): Promise<{ snapshot: Snapshot; reservations: Reservation[]; checked: number }> {
-  const { reservations, checked } = await collect();
+async function pass(limits: Limits): Promise<{ snapshot: Snapshot; reservations: Reservation[] }> {
+  const { reservations } = await collect();
   const snapshot = await admissionSnapshot(limits, reservations);
   const runs = snapshot.runs;
   const admitted = decide(snapshot).admit;
@@ -246,17 +240,7 @@ async function pass(
     await unlink(pathForTicket({ runId: run.id, seq: run.ticket }));
     if (!reservations.includes(reservation)) reservations.push(reservation);
   }
-  return { snapshot, reservations, checked };
-}
-async function notePass(metric: {
-  holdMs: number;
-  rexCalls: number;
-  members: number;
-  checked: number;
-}): Promise<void> {
-  const path = process.env.PI_SUBAGENTS_ADMISSION_METRICS;
-  if (!path) return;
-  await appendFile(path, `${JSON.stringify({ at: Date.now(), ...metric })}\n`);
+  return { snapshot, reservations };
 }
 export async function admit(
   run: RunRecord,
@@ -295,55 +279,40 @@ export async function admit(
     }
   });
   while (true) {
-    const measured = await withAdmissionLock(async () => {
-      const started = performance.now();
-      const traced = await traceRex(async () => {
-        const limits = await readLimits();
-        if (signal?.aborted || (await readClaim(run.paths.claim)) || (await claimedAncestor(run))) {
-          await removeTicket(run.id);
-          if (run.queue) {
-            run.queue = null;
-            await writeRun(run);
-          }
-          return { outcome: "cancelled" as const, members: 0, checked: 0 };
-        }
-        if (pause?.aborted) return { outcome: "paused" as const, members: 0, checked: 0 };
-        const { snapshot, reservations, checked } = await pass(limits);
-        const members = reservations.reduce(
-          (count, reservation) => count + reservation.members.length,
-          0,
-        );
-        if (reservations.some((r) => r.members.some((m) => m.runId === run.id))) {
-          if (run.queue) {
-            run.queue = null;
-            await writeRun(run);
-          }
-          return { outcome: "admitted" as const, members, checked };
-        }
-        const ticket = decide(snapshot).tickets.find((item) => item.id === run.id);
-        const reason = ticket?.reason === "checkout" ? "checkout" : "capacity";
-        const detail =
-          reason === "checkout"
-            ? ticket?.blockers.join(", ") || "overlapping checkout"
-            : "active or provider ceiling, or an older capacity ticket";
-        if (run.queue?.reason !== reason || run.queue.detail !== detail) {
-          run.queue = { reason, detail, since: run.queue?.since ?? Date.now() };
+    const outcome = await withAdmissionLock(async () => {
+      const limits = await readLimits();
+      if (signal?.aborted || (await readClaim(run.paths.claim)) || (await claimedAncestor(run))) {
+        await removeTicket(run.id);
+        if (run.queue) {
+          run.queue = null;
           await writeRun(run);
-          progress(run);
         }
-        return { outcome: "waiting" as const, members, checked };
-      });
-      return {
-        outcome: traced.value.outcome,
-        members: traced.value.members,
-        checked: traced.value.checked,
-        holdMs: performance.now() - started,
-        rexCalls: traced.calls,
-      };
+        return "cancelled" as const;
+      }
+      if (pause?.aborted) return "paused" as const;
+      const { snapshot, reservations } = await pass(limits);
+      if (reservations.some((r) => r.members.some((m) => m.runId === run.id))) {
+        if (run.queue) {
+          run.queue = null;
+          await writeRun(run);
+        }
+        return "admitted" as const;
+      }
+      const ticket = decide(snapshot).tickets.find((item) => item.id === run.id);
+      const reason = ticket?.reason === "checkout" ? "checkout" : "capacity";
+      const detail =
+        reason === "checkout"
+          ? ticket?.blockers.join(", ") || "overlapping checkout"
+          : "active or provider ceiling, or an older capacity ticket";
+      if (run.queue?.reason !== reason || run.queue.detail !== detail) {
+        run.queue = { reason, detail, since: run.queue?.since ?? Date.now() };
+        await writeRun(run);
+        progress(run);
+      }
+      return "waiting" as const;
     });
-    await notePass(measured);
-    if (measured.outcome === "paused") return "paused";
-    if (measured.outcome !== "waiting") return measured.outcome === "admitted";
+    if (outcome === "paused") return "paused";
+    if (outcome !== "waiting") return outcome === "admitted";
     await delay(200);
   }
 }

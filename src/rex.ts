@@ -1,16 +1,8 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import { EventEmitter } from "node:events";
 import { Type } from "typebox";
 import { parse, type Location, type ProcessObservation } from "./records.ts";
-
-const rexTrace = new AsyncLocalStorage<{ calls: number }>();
-/** Count Rex CLI calls made by this async flow, not concurrent work in the same process. */
-export async function traceRex<T>(body: () => Promise<T>): Promise<{ value: T; calls: number }> {
-  const store = { calls: 0 };
-  return { value: await rexTrace.run(store, body), calls: store.calls };
-}
 
 export function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value))
@@ -21,8 +13,6 @@ export async function command(
   args: string[],
   executable = process.env.PI_SUBAGENTS_REX ?? "rex",
 ): Promise<{ code: number; stdout: string; stderr: string }> {
-  const traced = rexTrace.getStore();
-  if (traced) traced.calls += 1;
   return new Promise((resolve, reject) => {
     execFile(
       executable,

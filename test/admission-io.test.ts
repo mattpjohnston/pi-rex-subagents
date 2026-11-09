@@ -6,7 +6,8 @@ import { join } from "node:path";
 import { expect, it } from "vitest";
 import { canonicalTarget, checkoutRoot } from "../src/checkout.ts";
 import { contains, overlaps } from "../src/admission-core.ts";
-import { readLimits } from "../src/admission.ts";
+import { admit, readLimits } from "../src/admission.ts";
+import { privateDirectory, runPaths, writeRun, type RunRecord } from "../src/records.ts";
 import { withRunLock } from "../src/claims.ts";
 
 async function scratch(body: (dir: string) => Promise<void>) {
@@ -140,3 +141,52 @@ it("serializes four real processes through stale recovery and repeated release",
     expect((await readFile(join(dir, "operations"), "utf8")).length).toBe(100);
   });
 }, 15000);
+
+it("admission writes no measurement file, whatever the environment says", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pirs-admit-"));
+  const metrics = join(root, "metrics.ndjson");
+  const previous = { ...process.env };
+  process.env.PI_SUBAGENTS_STATE_DIR = root;
+  process.env.PI_SUBAGENTS_ADMISSION_METRICS = metrics;
+  try {
+    const id = "c".repeat(24);
+    const dir = join(root, "runs", id);
+    await privateDirectory(dir);
+    const settings = { provider: "p", model: "test", thinking: "off" as const };
+    const run: RunRecord = {
+      version: 1,
+      id,
+      label: "admitted",
+      taskPath: join(dir, "task.md"),
+      cwd: root,
+      checkoutRoot: root,
+      access: "write",
+      requested: settings,
+      effective: settings,
+      background: false,
+      continueFrom: null,
+      parentSessionId: "parent",
+      parentRunId: null,
+      depth: 1,
+      rex: null,
+      location: null,
+      paths: runPaths(dir),
+      lifecycle: "admitting",
+      process: { state: "unknown" },
+      waiting: null,
+      queue: null,
+      sessionFile: null,
+      diagnostic: null,
+      createdAt: 0,
+      updatedAt: 0,
+      loadedAt: null,
+      finishedAt: null,
+    };
+    await writeRun(run);
+    expect(await admit(run)).toBe(true);
+    expect(existsSync(metrics)).toBe(false);
+  } finally {
+    process.env = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});

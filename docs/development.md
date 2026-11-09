@@ -85,7 +85,6 @@ The tests use these. They aren't meant for normal use.
 - `PI_SUBAGENTS_LOG_TOOLS` logs every tool call a subagent makes, with its arguments.
 - `PI_SUBAGENTS_FINGERPRINT_MAX_BYTES` and `PI_SUBAGENTS_FINGERPRINT_MAX_MS` lower the size and time limits for `inspect` change detection.
 - `PI_SUBAGENTS_COALESCE_MS` changes the 3-second wait before sending results to an idle parent.
-- `PI_SUBAGENTS_ADMISSION_METRICS` records how long admission holds its lock.
 - Three events on Pi's extension bus let test extensions pause the extension at precise points: `subagents:test-takeover-claimed` (after a takeover is claimed, before it's acknowledged), `subagents:test-settlement` (before a subagent finishes), and `subagents:test-cancel-claimed` (after a cancel is claimed, before the signal). `HARNESS_CANCEL_CRASH=1` makes the test parent kill itself at that last point.
 
 `pnpm exec vitest run test/inbox.test.ts --reporter=verbose --disableConsoleIntercept` prints how many protocol states the model comparison checked and how long it took.
