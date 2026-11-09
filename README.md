@@ -77,7 +77,7 @@ Ask subagents for a short final report, and to put anything long in a file. The 
 
 Closing a tab doesn't delete anything. The conversation, result, and records stay on disk until an old run is deleted after `keepRunsFor` days.
 
-When a subagent needs you, for example to answer a dialog or Pi's trust prompt, the parent shows a notice with the `/subagents go` command for it. The subagent also sends a desktop notification.
+When a subagent needs you, for example to answer a dialog or Pi's trust prompt, the parent shows a notice with the `/subagents go` command for it.
 
 ### Rex key bindings
 

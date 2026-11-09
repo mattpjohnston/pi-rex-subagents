@@ -168,7 +168,7 @@ The parent waits up to 10 seconds for an answer and reports `accepted`, `refused
 
 ## Rex actions
 
-`rex/next_waiting.lua` registers `subagents_next_waiting`. It reads the records of running subagents, picks the one that has waited longest for you, and selects its tab. `/subagents go next` runs the same script. It uses the run records rather than Rex status, because Pi's trust prompt doesn't show as a Rex status. With 48 running subagents it takes about 20 ms. Each time a subagent starts waiting, it writes one OSC 9 desktop notification to its own terminal.
+`rex/next_waiting.lua` registers `subagents_next_waiting`. It reads the records of running subagents, picks the one that has waited longest for you, and selects its tab. `/subagents go next` runs the same script. It uses the run records rather than Rex status, because Pi's trust prompt doesn't show as a Rex status. With 48 running subagents it takes about 20 ms. Subagents send no desktop notification. The Rex app showed no banner for one, so the parent's notice and this action are how you find a waiting subagent.
 
 `rex/keep.lua` registers `subagents_keep`, which pins or unpins the selected tab.
 
