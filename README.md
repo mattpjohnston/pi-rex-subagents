@@ -27,17 +27,17 @@ See [docs/design.md](docs/design.md) for the full design.
 
 ## Install
 
-Install it as a Pi package:
+```sh
+pi install npm:pi-rex-subagents
+```
+
+Or straight from GitHub:
 
 ```sh
 pi install git:github.com/mattpjohnston/pi-rex-subagents
 ```
 
-Or try it for one session:
-
-```sh
-pi -e git:github.com/mattpjohnston/pi-rex-subagents
-```
+To try it for one session without installing, add `-e npm:pi-rex-subagents` to `pi`.
 
 The extension registers a tool named `subagent`. Remove or disable any other extension that registers the same tool name before you install this one.
 

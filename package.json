@@ -1,8 +1,27 @@
 {
   "name": "pi-rex-subagents",
-  "version": "0.0.0",
-  "description": "Rex-backed delegated Pi sessions",
+  "version": "0.1.0",
+  "description": "Delegate work to fresh Pi sessions in Rex tabs: parallel, background and nested subagents with checkout-aware admission",
+  "keywords": [
+    "agents",
+    "pi",
+    "pi-package",
+    "rex",
+    "subagents"
+  ],
+  "homepage": "https://github.com/mattpjohnston/pi-rex-subagents#readme",
+  "bugs": "https://github.com/mattpjohnston/pi-rex-subagents/issues",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mattpjohnston/pi-rex-subagents.git"
+  },
+  "files": [
+    "src",
+    "rex",
+    "docs/design.md",
+    "CHANGELOG.md"
+  ],
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -23,6 +42,11 @@
     "typebox": "^1.4.5",
     "typescript": "^7.0.2",
     "vitest": "^5.1.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
   },
   "engines": {
     "node": ">=26"
