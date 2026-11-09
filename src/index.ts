@@ -8,10 +8,10 @@ import {
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { contains } from "./admission-core.ts";
-import { writerOnPath } from "./admission.ts";
+import { park, readLimits, wake, writerOnPath } from "./admission.ts";
 import { canonicalTarget, checkoutRoot } from "./checkout.ts";
-import { cancelControlled, ownedRuns, registerControl } from "./control.ts";
-import { readClaim, type Claim } from "./claims.ts";
+import { cancelControlled, ownedRuns, registerControl, treeOrder } from "./control.ts";
+import { readClaim } from "./claims.ts";
 import {
   DELIVERY_NOTE,
   NOTE_TYPE,
@@ -21,11 +21,11 @@ import {
   deliveredRunIds,
   endsWithUnansweredDelivery,
   nextDelivery,
+  outcomeOf,
   packDelivery,
   shouldAppend,
   shouldCancel,
   transitionView,
-  type DeliveryOutcome,
 } from "./delivery.ts";
 import { claimRuntime } from "./load-guard.ts";
 import { workingDirectory } from "./settings.ts";
@@ -36,12 +36,10 @@ import {
   isTerminal,
   listRuns,
   parse,
-  readResult,
   readRun,
   runDirectory,
   transition,
   writeRun,
-  type ResultFile,
   type RunRecord,
 } from "./records.ts";
 import {
@@ -65,7 +63,8 @@ export function statusLine(run: RunRecord): string {
     ? `waiting for a human: ${run.waiting.kind} — ${run.waiting.title}`
     : null;
   const queued = run.queue ? `queued for ${run.queue.reason}: ${run.queue.detail}` : null;
-  return `${run.label} [${run.access}] ${[human, queued].filter(Boolean).join("; ") || run.lifecycle}`;
+  const indent = "  ".repeat(Math.max(0, run.depth - 1));
+  return `${indent}${run.label} [${run.access}] ${[human, queued, run.activity?.parked ? `parked (${run.activity.parked})` : null].filter(Boolean).join("; ") || run.lifecycle}`;
 }
 export function attentionText(run: RunRecord): string {
   return `${statusLine(run)}. Open /subagents go ${run.label}.${run.waiting?.kind === "project_trust" ? ' Pi’s "Trust parent folder" option can cover later worktrees under that root.' : ""}`;
@@ -88,7 +87,7 @@ async function sameMessageWriter(
     for (const part of entry.message.content) {
       if (part.type !== "toolCall" || part.name !== "subagent") continue;
       const access = part.arguments.access;
-      if (access === "read" || access === "inspect") continue;
+      if (!process.env.PI_SUBAGENTS_RUN_ID && (access === "read" || access === "inspect")) continue;
       const label =
         typeof part.arguments.label === "string" && part.arguments.label.trim()
           ? part.arguments.label.trim()
@@ -115,7 +114,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     if ((await realpath(dirname(run.paths.run))) !== (await realpath(runDirectory(childId))))
       throw new Error("Child record path mismatch");
     registerReporter(pi, run);
-    return;
+    if (run.access === "read" || run.depth >= (await readLimits()).depth) return;
   }
   registerControl(pi);
   const events = new RexEvents();
@@ -176,7 +175,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
             run.lifecycle === "admitting" &&
             contains(run.checkoutRoot, target),
         ) ??
-        (await writerOnPath(target));
+        (await writerOnPath(target, childId));
       if (writer)
         return {
           block: true,
@@ -194,24 +193,6 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   const notices = new Map<string, string>();
   const sessionRuns = async (ctx: ExtensionContext) =>
     (await listRuns()).filter((run) => run.parentSessionId === ctx.sessionManager.getSessionId());
-  const outcomeOf = async (run: RunRecord, claim: Claim | null): Promise<DeliveryOutcome> => {
-    let result: ResultFile | undefined;
-    if (claim === "result") {
-      try {
-        result = await readResult(run);
-      } catch (error) {
-        if (!(error instanceof Error)) throw error;
-      }
-    }
-    return {
-      runId: run.id,
-      outcome: claim === "taken_over" ? "taken_over" : (result?.outcome ?? run.lifecycle),
-      text: resultText(run, result, result?.checkout),
-      sessionPath: result?.sessionFile ?? run.sessionFile ?? run.paths.sessionDir,
-      resultPath: run.paths.result,
-      ...(result?.checkout ? { checkout: result.checkout } : {}),
-    };
-  };
   const views = async (ctx: ExtensionContext) => {
     const delivered = deliveredRunIds(ctx.sessionManager.getBranch());
     return Promise.all(
@@ -229,6 +210,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     source: "settled" | "timer" | "reconcile" | "append",
   ) => {
     const branch = ctx.sessionManager.getBranch();
+    if (childId) return;
     const delivered = deliveredRunIds(branch);
     for (const id of inflight) if (delivered.has(id)) inflight.delete(id);
     const pending = [];
@@ -380,14 +362,14 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     if (refreshing) return;
     refreshing = true;
     try {
-      const runs = await sessionRuns(ctx);
+      const runs = ownedRuns(await listRuns(), ctx.sessionManager.getSessionId());
       for (const run of runs) {
         if (isTerminal(run.lifecycle) && run.process.state !== "exited" && run.rex) {
           await reconcile(run);
           await writeRun(run);
         }
       }
-      const lines = runs.filter(live).sort(waitingFirst).slice(0, 20).map(statusLine);
+      const lines = treeOrder(runs.filter(live)).slice(0, 20).map(statusLine);
       const clearable = (await Promise.all(runs.map(clearEligible))).filter(Boolean).length;
       if (clearable)
         lines.push(`${clearable} exited completed child terminal(s): /subagents clear`);
@@ -448,7 +430,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     description:
       "List this parent's runs; all lists every live child; go <label> selects its tab; cancel <label|run-id> cancels a background run",
     handler: async (args, ctx) => {
-      const all = (await listRuns()).sort(waitingFirst);
+      const all = treeOrder(await listRuns());
       const owned = ownedRuns(all, ctx.sessionManager.getSessionId());
       if (args === "clear" || args.startsWith("dismiss ")) {
         const target = args.slice("dismiss ".length).trim();
@@ -498,7 +480,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       if (args.startsWith("go ")) {
         const label = args.slice(3).trim();
         const matches = all.filter(
-          (run) => run.label === label && run.parentSessionId === ctx.sessionManager.getSessionId(),
+          (run) => run.label === label && owned.some((r) => r.id === run.id),
         );
         if (matches.length !== 1 || !matches[0]?.rex) {
           ctx.ui.notify("Label must identify exactly one child with a Rex block", "error");
@@ -529,9 +511,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         );
         return;
       }
-      const selected = all.filter((run) =>
-        args === "all" ? live(run) : run.parentSessionId === ctx.sessionManager.getSessionId(),
-      );
+      const selected = args === "all" ? all.filter(live) : owned;
       for (const run of selected.slice(0, 30)) {
         if (run.rex) run.location = await locate(run.rex.blockId, run.location ?? run.rex);
       }
@@ -545,6 +525,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
             .map((run) =>
               [
                 statusLine(run),
+                run.parentRunId &&
+                all.find((r) => r.id === run.parentRunId)?.process.state === "exited"
+                  ? "Orphaned: immediate parent is gone; outcome retained on disk"
+                  : "",
                 `Run ${run.id}; checkout ${run.checkoutRoot}; model ${run.effective.provider}/${run.effective.model} (${run.effective.thinking})`,
                 `Rex ${JSON.stringify(run.location)}; process ${JSON.stringify(run.process)}`,
                 `Result ${run.paths.result}; events ${run.paths.events}; session ${run.sessionFile ?? run.paths.sessionDir}`,
@@ -567,7 +551,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     name: "subagent",
     label: "Subagent",
     description:
-      "Delegate one task to a fresh interactive Pi in a background Rex tab. access is read (only read, grep, find, ls, and git_read), inspect (normal tools except edit and write; the result reports whether the checkout changed during the run), or write. Ask for a short final report; have bulk output written to a file the report names. Inherits the parent's effective model and thinking unless overridden. Output is capped at 50 KB / 2000 lines, with the full session path. Leave background false for a short fan-out whose results this turn needs. Set background true for long work, or work the human may redirect the parent around: it returns the run ID once the run is admitted or queued, and the result arrives later, coalesced with other background results. Nested launches are refused until phase 6; children do not get this tool.",
+      "Delegate one task to a fresh interactive Pi in a background Rex tab. access is read (only read, grep, find, ls, and git_read), inspect (normal tools except edit and write; reports checkout changes), or write. Ask for a short final report; have bulk output written to a file the report names. Inherits model and thinking unless overridden. Output is capped at 50 KB / 2000 lines with the full session path. Foreground waits for the result. Background returns a run ID once admitted or queued and delivers outcomes together after you settle. Nested launches share admission and checkout reservations, to the configured depth. Inspect children default to inspect and cannot launch writers. A member with a live descendant on its checkout cannot edit/write; bash is not blocked. Workflow and model choices remain yours.",
     parameters: LaunchInput,
     async execute(_id, input, signal, onUpdate, ctx) {
       const run = prepared.get(_id) ?? (await prepareRun(input, ctx));
@@ -619,6 +603,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
             details: { runId: ready.id },
           };
         }
+        if (childId) await park(childId, "foreground", _id);
         const outcome = await runForeground(run, entry, events, signal, progress);
         return {
           content: [
@@ -640,6 +625,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         throw error;
       } finally {
         active.delete(run.id);
+        if (childId && !run.background) await wake(childId, _id);
         if (context) await refresh(context);
       }
     },

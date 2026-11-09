@@ -150,7 +150,9 @@ export async function admissionSnapshot(
       parent: record.parentRunId,
       access: record.access,
       checkout: record.checkoutRoot,
-      provider: record.effective.provider,
+      provider:
+        reservation?.members.find((m) => m.runId === record.id)?.provider ??
+        record.effective.provider,
       state: reservation
         ? winner === "taken_over"
           ? "taken"
@@ -326,9 +328,18 @@ export async function admit(
 export async function writerOnPath(target: string, memberId?: string): Promise<RunRecord | null> {
   return withAdmissionLock(async () => {
     await readLimits();
-    for (const reservation of (await collect()).reservations)
+    const reservations = (await collect()).reservations;
+    if (memberId) {
+      const own = await readRun(memberId);
+      const reservation = reservations.find((r) => r.members.some((m) => m.runId === memberId));
+      if (contains(own.checkoutRoot, target) && reservation)
+        for (const member of reservation.members)
+          if (await isDescendant(member.runId, memberId)) return readRun(member.runId);
+    }
+    for (const reservation of reservations)
       for (const member of reservation.members) {
-        if (member.runId === memberId) continue;
+        if (member.runId === memberId || (memberId && (await isDescendant(memberId, member.runId))))
+          continue;
         if (
           contains(member.checkout, target) &&
           (member.access === "write" || (memberId && (await isDescendant(member.runId, memberId))))
@@ -365,23 +376,27 @@ export async function wake(id: string, callId?: string): Promise<void> {
     if (activity.parked && !activity.foreground.length) activity.readyToWake = true;
   });
   while (true) {
-    const done = await withAdmissionLock(async () => {
-      const run = await readRun(id);
-      if (
-        !run.activity?.parked ||
-        run.activity.foreground.length ||
-        (await readClaim(run.paths.claim))
-      )
-        return true;
-      const snapshot = await admissionSnapshot(await readLimits(), (await collect()).reservations);
-      if (!decide(snapshot).wakes.find((r) => r.id === id)?.hasSlot) return false;
-      await updateActivity(id, (activity) => {
-        activity.parked = null;
-        activity.readyToWake = false;
-      });
-      return true;
-    });
+    const done = await tryWake(id);
     if (done) return;
     await delay(200);
   }
+}
+
+export async function tryWake(id: string): Promise<boolean> {
+  return withAdmissionLock(async () => {
+    const run = await readRun(id);
+    if (
+      !run.activity?.parked ||
+      run.activity.foreground.length ||
+      (await readClaim(run.paths.claim))
+    )
+      return true;
+    const snapshot = await admissionSnapshot(await readLimits(), (await collect()).reservations);
+    if (!decide(snapshot).wakes.find((r) => r.id === id)?.hasSlot) return false;
+    await updateActivity(id, (activity) => {
+      activity.parked = null;
+      activity.readyToWake = false;
+    });
+    return true;
+  });
 }

@@ -8,6 +8,7 @@ export interface ProtocolSnapshot {
   child: "working" | "settling" | "idle" | "shutdown" | "exiting" | "human" | "exited";
   messages: readonly MessageState[];
   piQueue: readonly number[];
+  descendants?: { pending: boolean; live: boolean };
 }
 export type InboxAction = "steer" | "prompt" | "defer" | "refuse" | "none";
 export function inboxDecision(s: ProtocolSnapshot): InboxAction {
@@ -17,14 +18,13 @@ export function inboxDecision(s: ProtocolSnapshot): InboxAction {
   if (s.claim !== null) return "refuse";
   return s.child === "working" ? "steer" : "prompt";
 }
-export type SettlementAction = "send" | "wait" | "publish" | "exit" | "stay" | "none";
+export type SettlementAction = "send" | "wait" | "park" | "publish" | "exit" | "stay" | "none";
 export function settlementDecision(s: ProtocolSnapshot): SettlementAction {
   if (s.lock || s.child !== "settling") return "none";
   if (s.claim === "cancelled" || s.claim === "result") return "exit";
   if (s.claim === "taken_over") return "stay";
-  // Phase 6: coalesce descendant outcomes with unsent accepted messages here.
-  if (s.messages.includes("accepted")) return "send";
+  if (s.messages.includes("accepted") || s.descendants?.pending) return "send";
   if (s.messages.includes("sent")) return "wait";
-  // Phase 6: park here if live or queued descendants remain.
+  if (s.descendants?.live) return "park";
   return "publish";
 }

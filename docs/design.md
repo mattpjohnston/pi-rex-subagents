@@ -87,13 +87,25 @@ A membership ends when Rex confirms the child's process exited, either because t
 
 The parent's own `edit` and `write` calls are refused inside a checkout a live child writer holds, including an edit in the same message as the launch. `bash` is never refused, because its targets cannot be known in advance. This is coordination for well-behaved tools, not a lock.
 
-**Nesting (later).** A `write` or `inspect` child will be able to launch children up to a configured depth. Three rules keep admission free of deadlocks:
+### Nesting
+
+A `write` or `inspect` child can launch below the configured depth (default 2, counting the unmanaged parent's children as layer 1). Tools are not registered at the limit or in a reader. Inspectors default to inspect and cannot launch writers. Records identify the immediate parent run/session and root parent session; only the immediate parent receives results. Three rules keep admission free of deadlocks:
 
 - A descendant on an overlapping checkout joins its ancestor's reservation instead of queueing behind runs outside it.
 - A launch that would close a wait cycle is refused, naming the runs in the cycle.
 - A run parked on its descendants does not count against the ceilings, and it goes back through admission before its next model call.
 
-The admission core already implements these rules, and a differential test checks it against the model.
+The core is checked differentially against the model, and a disk-backed test checks the live snapshot shape: exited ancestry, parked members, human-owned members, detached outcomes, and queued tickets. Model-driven wakeups wait for capacity ahead of newer tickets. Takeover, human input, and model changes clear parking immediately, even over a ceiling.
+
+The reporter owns `activity` in the run record: parking, wake readiness, foreground calls, and started tools. Admission serializes activity updates with parent lifecycle writes, preserving newer reporter fields. Foreground calls park before waiting; the last sibling return reacquires capacity before Pi can make its next model call. Settlement parks while descendants or accepted messages remain. A settled reporter never waits for capacity while holding a lock or a settlement callback: polling retries the wake, leaving takeover available.
+
+**Join amendment.** Joining waits for every ancestor member's started tool except `subagent`, including non-launch siblings in the same assistant message. Waiting for the launching or sibling `subagent` would deadlock foreground nesting: it cannot end until its nested child finishes. Bash and every other started tool still hold the join. The member's edit/write guard sees pending launches in the assistant message and live descendant members. Bash remains an accepted coordination gap.
+
+**One nested delivery owner.** Busy children retain background outcomes on disk without queueing a turn. At settlement, or polling after a parked settlement, the reporter reads immediate descendants and inbox messages under admission then run lock. Pending outcomes and unsent accepted messages go together in one `sendUserMessage` turn, after wake admission. Persisted `[subagent outcome <id>]` markers prove delivery on the active branch; sent-but-not-yet-persisted outcomes block publication. Foreground tool results carry the run ID and already count as delivered. Nested outcomes never use the unmanaged parent's `subagent-results` path. Takeover is ready immediately without waiting for the human's process exit. Cancellation, startup failure, and result/exit outcomes use the same path. With no waiting deliveries, sent inbox messages block publication, live descendants cause parking, and only then may the reporter claim a result. Exited immediate parents receive nothing; artifacts stay on disk.
+
+Cancellation claims the selected run and descendants under admission then each run lock, skipping human-owned subtrees. Claimed ancestors invalidate waiting tickets and refuse launches. Once Rex replies to an in-flight launch, the launcher rechecks claims and closes the exact new block if cancellation won. Observation lists the tree parent-first with indentation.
+
+The protocol model covers one run, not a descendant graph. Its exhaustive differential still checks the unchanged one-run table. Explicit descendant-table tests and real harness schedules check coalescing, busy outcomes, parking, and publication ordering.
 
 ## Background delivery
 
@@ -116,7 +128,7 @@ Taken-over children are never cancelled by a transition.
 
 ## Parent control and inbox
 
-The parent-only `subagent_control` tool has `list`, `cancel`, and `message`, with no model-facing wait operation. Listing is bounded to 30 and scopes by ancestry. Cancel uses the same claim-and-signal path as `/subagents cancel`, refuses human-owned children, and can close a hung result winner after its shutdown grace without changing its outcome.
+The `subagent_control` tool has `list`, `cancel`, and `message`, with no model-facing wait operation. Listing is bounded to 30 and scopes by ancestry. Cancel uses the same claim-and-signal path as `/subagents cancel`, refuses human-owned subtrees, and can close a hung result winner after its shutdown grace without changing its outcome.
 
 Each message is a private, atomically replaced `inbox/<message-id>.json` with `id`, `runId`, `text`, `sender` (the parent Pi session ID), and `createdAt`. Before acknowledgment its state is implicitly `written`. The companion `<message-id>.ack.json` is one union: `accepted` with `acceptedAt` and nullable `sentAt`, `consumed` with those timestamps and `consumedAt`, or `refused` with the winning `claim` and `refusedAt`. Every ack includes `messageId` and `runId`. The model's `sent` state is an accepted ack with non-null `sentAt`.
 

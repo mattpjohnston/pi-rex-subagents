@@ -47,10 +47,29 @@ export async function cancelControlled(
         : "Cancellation claimed before signalling; exit confirmation remains in the run record",
   };
 }
+export function treeOrder(runs: readonly RunRecord[]): RunRecord[] {
+  const ordered: RunRecord[] = [];
+  const visit = (parent: string | null) => {
+    const children = runs
+      .filter((r) =>
+        parent === null
+          ? !r.parentRunId || !runs.some((p) => p.id === r.parentRunId)
+          : r.parentRunId === parent,
+      )
+      .sort(
+        (a, b) =>
+          Number(Boolean(b.waiting)) - Number(Boolean(a.waiting)) || a.createdAt - b.createdAt,
+      );
+    for (const child of children) {
+      ordered.push(child);
+      visit(child.id);
+    }
+  };
+  visit(null);
+  return ordered;
+}
 export async function controlList(runs: readonly RunRecord[]) {
-  const sorted = [...runs].sort(
-    (a, b) => Number(Boolean(b.waiting)) - Number(Boolean(a.waiting)) || b.createdAt - a.createdAt,
-  );
+  const sorted = treeOrder(runs);
   const entries = [];
   for (const run of sorted.slice(0, CONTROL_LIST_LIMIT)) {
     let lastRexStatus: unknown = null;
@@ -94,6 +113,14 @@ export async function controlList(runs: readonly RunRecord[]) {
     entries.push({
       runId: run.id,
       parentRunId: run.parentRunId,
+      depth: run.depth,
+      indent: "  ".repeat(Math.max(0, run.depth - 1)),
+      orphaned: Boolean(
+        run.parentRunId &&
+        (!runs.some((r) => r.id === run.parentRunId) ||
+          runs.find((r) => r.id === run.parentRunId)?.process.state === "exited"),
+      ),
+      parked: run.activity?.parked ?? null,
       label: run.label,
       access: run.access,
       state: (await readClaim(run.paths.claim)) ?? run.lifecycle,

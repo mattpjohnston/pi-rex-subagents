@@ -14,10 +14,10 @@ The first release covers:
 - `inspect` children that keep a shell and MCP but report afterwards whether the checkout changed during the run.
 - Background results pushed into the parent session, coalesced, and reconciled after reloads and crashes.
 - Parent controls to list runs, cancel a stuck child, and send acknowledged stop or hold orders without typing into its terminal.
+- Nested write/inspect delegates with shared reservations, parked capacity, and immediate-parent result delivery, to a configured depth (default 2).
 
 These are designed but not built yet:
 
-- Nested children. In this release, children cannot launch their own children.
 - A Rex action that jumps to the next waiting child.
 - A desktop notice when a child waits.
 
@@ -97,7 +97,7 @@ The parent model has one `subagent_control` tool:
 
 `message` returns `accepted` only after the child acknowledges it under the same lock as settlement and takeover. It returns `refused` with a reason, or `unacknowledged` after 10 seconds. An unacknowledged message may still be accepted later; it is not proof of delivery or refusal. The message ID appears in the child's saved user message, and settlement waits for accepted messages to be consumed before publishing. Messages never answer an open dialog. A takeover outcome lists accepted messages that were not consumed when the human took ownership.
 
-Children do not get `subagent_control` until nesting is enabled.
+Write and inspect children get `subagent` and `subagent_control` below the depth limit. Read children never get them. Inspect children default nested launches to inspect and cannot launch writers. Members cannot edit/write their checkout while a live descendant shares their reservation; bash is not blocked.
 
 ### Limits
 
@@ -109,7 +109,7 @@ Admission reads `limits.json` in the state directory on every decision, so edits
 
 - `active` is the most live children across every parent on the machine. The default is 4.
 - `providers` optionally caps children per provider.
-- `depth` is reserved for nesting, which this release does not enable.
+- `depth` counts layers below the unmanaged parent. The default is 2; 1 disables nesting. Parked children retain reservations but release capacity while waiting for descendants, then reacquire a slot before model work resumes. Human actions count immediately, even over a ceiling.
 
 A missing file means the defaults. A malformed file blocks admission with an error naming the file.
 

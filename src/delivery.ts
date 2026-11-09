@@ -1,7 +1,13 @@
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-agent";
 import type { Claim } from "./claims.ts";
-import { isTerminal, type CheckoutReport, type RunRecord } from "./records.ts";
-import { checkoutText } from "./results.ts";
+import {
+  isTerminal,
+  readResult,
+  type ResultFile,
+  type CheckoutReport,
+  type RunRecord,
+} from "./records.ts";
+import { checkoutText, resultText } from "./results.ts";
 
 export const RESULTS_TYPE = "subagent-results";
 export const NOTE_TYPE = "subagent-results-note";
@@ -173,4 +179,17 @@ export function shouldCancel(run: TransitionView, sessionId: string): boolean {
 }
 export function shouldAppend(run: TransitionView, sessionId: string): boolean {
   return run.background && run.parentSessionId === sessionId && run.ready && !run.delivered;
+}
+
+export async function outcomeOf(run: RunRecord, claim: Claim | null): Promise<DeliveryOutcome> {
+  let result: ResultFile | undefined;
+  if (claim === "result") result = await readResult(run).catch(() => undefined);
+  return {
+    runId: run.id,
+    outcome: claim === "taken_over" ? "taken_over" : (result?.outcome ?? run.lifecycle),
+    text: resultText(run, result, result?.checkout),
+    sessionPath: result?.sessionFile ?? run.sessionFile ?? run.paths.sessionDir,
+    resultPath: run.paths.result,
+    ...(result?.checkout ? { checkout: result.checkout } : {}),
+  };
 }

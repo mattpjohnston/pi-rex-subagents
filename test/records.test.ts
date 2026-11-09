@@ -132,6 +132,8 @@ it("does not let advisory Rex idle clear an authoritative reporter or trust wait
 
 it("records no live process when cancellation wins before Rex launch", async () => {
   const root = await mkdtemp(join(tmpdir(), "pirs-cancel-"));
+  const previous = process.env.PI_SUBAGENTS_STATE_DIR;
+  process.env.PI_SUBAGENTS_STATE_DIR = root;
   try {
     const run = record(root);
     await privateDirectory(join(root, "runs", run.id));
@@ -146,6 +148,8 @@ it("records no live process when cancellation wins before Rex launch", async () 
     expect(result.run.lifecycle).toBe("cancelled");
     expect(result.run.process).toEqual({ state: "exited", code: null });
   } finally {
+    if (previous === undefined) delete process.env.PI_SUBAGENTS_STATE_DIR;
+    else process.env.PI_SUBAGENTS_STATE_DIR = previous;
     await rm(root, { recursive: true, force: true });
   }
 });

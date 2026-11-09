@@ -5,6 +5,9 @@ import { expect, it } from "vitest";
 import { admissionSnapshot, readLimits } from "../src/admission.ts";
 import { decide, launchCycle } from "../src/admission-core.ts";
 import { claim, withAdmissionLock } from "../src/claims.ts";
+import { readClaim } from "../src/claims.ts";
+import { cancel } from "../src/launch.ts";
+import { settlementDecision, type ProtocolSnapshot } from "../src/protocol.ts";
 import {
   atomicWrite,
   initialActivity,
@@ -124,9 +127,60 @@ it("builds the model's nested reservation, parking, takeover, and ancestry shape
     snapshot = await admissionSnapshot({ active: 1, depth: 3, providers: {} });
     expect(decide(snapshot).wakes).toEqual([{ id: a.id, hasSlot: false }]);
     expect(decide(snapshot).admit).toBeNull();
+    const sibling = await make(5, a, "/other");
+    const queued = await make(6, sibling, "/third");
+    await atomicWrite(join(root, "queue", `2-${queued.id}.json`), { runId: queued.id, seq: 2 });
+    await cancel(a);
+    expect(await readClaim(a.paths.claim)).toBe("cancelled");
+    expect(await readClaim(sibling.paths.claim)).toBe("cancelled");
+    expect(await readClaim(queued.paths.claim)).toBe("cancelled");
+    expect(await readClaim(b.paths.claim)).toBe("taken_over");
+    expect(await readClaim(c.paths.claim)).toBeNull();
+    expect(await cancel(c)).toBe("taken_over");
   } finally {
     if (previous === undefined) delete process.env.PI_SUBAGENTS_STATE_DIR;
     else process.env.PI_SUBAGENTS_STATE_DIR = previous;
     await rm(root, { recursive: true, force: true });
   }
+});
+
+it("extends the one-run settlement table in the specified descendant order", () => {
+  const base: ProtocolSnapshot = {
+    claim: null,
+    lock: null,
+    child: "settling",
+    messages: [],
+    piQueue: [],
+  };
+  expect(
+    settlementDecision({ ...base, messages: ["sent"], descendants: { pending: true, live: true } }),
+  ).toBe("send");
+  expect(
+    settlementDecision({
+      ...base,
+      messages: ["accepted"],
+      descendants: { pending: false, live: true },
+    }),
+  ).toBe("send");
+  expect(
+    settlementDecision({
+      ...base,
+      messages: ["sent"],
+      descendants: { pending: false, live: true },
+    }),
+  ).toBe("wait");
+  expect(settlementDecision({ ...base, descendants: { pending: false, live: true } })).toBe("park");
+  expect(settlementDecision({ ...base, descendants: { pending: false, live: false } })).toBe(
+    "publish",
+  );
+  expect(
+    settlementDecision({ ...base, claim: "cancelled", descendants: { pending: true, live: true } }),
+  ).toBe("exit");
+  expect(
+    settlementDecision({
+      ...base,
+      claim: "taken_over",
+      descendants: { pending: true, live: true },
+    }),
+  ).toBe("stay");
 });

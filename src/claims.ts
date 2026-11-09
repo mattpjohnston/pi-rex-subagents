@@ -44,14 +44,26 @@ export async function claim(path: string, winner: Claim): Promise<Claim> {
     });
   }
 }
-const admissionScope = new AsyncLocalStorage<boolean>();
+const admissionScope = new AsyncLocalStorage<{ active: boolean }>();
+/** Pi starts queued work asynchronously; it must not inherit ownership of a released lock. */
+export function outsideAdmission<T>(body: () => T): T {
+  return admissionScope.exit(body);
+}
 export async function withAdmissionLock<T>(body: () => Promise<T>): Promise<T> {
-  if (admissionScope.getStore()) return body();
+  if (admissionScope.getStore()?.active) return body();
   await privateDirectory(stateDir());
   const path = join(stateDir(), "lock");
   return withLock(
     path,
-    () => admissionScope.run(true, body),
+    () =>
+      admissionScope.run({ active: true }, async () => {
+        try {
+          return await body();
+        } finally {
+          const scope = admissionScope.getStore();
+          if (scope) scope.active = false;
+        }
+      }),
     () => recoverStaleLock(path),
   );
 }

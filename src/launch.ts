@@ -24,10 +24,12 @@ import {
   type CheckoutReport,
   type ResultFile,
   RunRecord,
+  initialActivity,
+  listRuns,
   type ModelSettings,
 } from "./records.ts";
 import { claim, readClaim, withAdmissionLock, withRunLock } from "./claims.ts";
-import { admit, removeTicket } from "./admission.ts";
+import { admit, claimedAncestor, readLimits, removeTicket } from "./admission.ts";
 import { InboxMessage } from "./inbox.ts";
 import { checkoutRoot } from "./checkout.ts";
 import { captureFingerprint, compareFingerprints, type Fingerprint } from "./fingerprint.ts";
@@ -66,10 +68,19 @@ export const SHUTDOWN_MS = 10_000;
 export const CANCELLATION_MS = 30_000;
 
 export async function prepareRun(input: LaunchInput, ctx: ExtensionContext): Promise<RunRecord> {
-  if (process.env.PI_SUBAGENTS_RUN_ID)
-    throw new Error(
-      "Nested launch refused: phase 2 effective depth is 1 regardless of limits.json; nesting arrives in phase 6",
-    );
+  const parentRun = process.env.PI_SUBAGENTS_RUN_ID
+    ? await readRun(process.env.PI_SUBAGENTS_RUN_ID)
+    : null;
+  if (parentRun) {
+    if (parentRun.access === "read" || parentRun.depth >= (await readLimits()).depth)
+      throw new Error(`Nested launch refused: depth limit or read access on ${parentRun.id}`);
+    if (parentRun.access === "inspect" && input.access === "write")
+      throw new Error(
+        "Nested write refused: inspect children may launch only read or inspect children",
+      );
+    if ((await readClaim(parentRun.paths.claim)) || (await claimedAncestor(parentRun)))
+      throw new Error(`Nested launch refused: ancestor ${parentRun.id} already has a claim`);
+  }
   if (!input.task.trim()) throw new Error("Subagent task must not be empty");
   if (!process.env.REX_SESSION)
     throw new Error("Subagent requires a parent running inside Rex (REX_SESSION is not set)");
@@ -114,14 +125,19 @@ export async function prepareRun(input: LaunchInput, ctx: ExtensionContext): Pro
     taskPath: resolve(dirname(paths.run), "task.md"),
     cwd,
     checkoutRoot: root,
-    access: input.access ?? "write",
+    access: input.access ?? (parentRun?.access === "inspect" ? "inspect" : "write"),
     requested: settings.requested,
     effective: settings.effective,
     background: input.background === true,
     continueFrom,
     parentSessionId: ctx.sessionManager.getSessionId(),
-    parentRunId: null,
-    depth: 0,
+    rootParentSessionId:
+      parentRun?.rootParentSessionId ??
+      parentRun?.parentSessionId ??
+      ctx.sessionManager.getSessionId(),
+    parentRunId: parentRun?.id ?? null,
+    depth: parentRun ? parentRun.depth + 1 : 1,
+    activity: initialActivity(),
     rex: null,
     location: null,
     paths,
@@ -145,6 +161,9 @@ export async function childArgv(run: RunRecord, entry: string): Promise<string[]
   for (const key of [
     "PI_SUBAGENTS_STATE_DIR",
     "PI_SUBAGENTS_LOG_TOOLS",
+    "PI_SUBAGENTS_CHILD_NO_DISCOVERY",
+    "PI_SUBAGENTS_CHILD_EXTENSIONS",
+    "HARNESS_NESTED_PLAN_DIR",
     "HARNESS_TOOL_LOG",
     "HARNESS_EXTRA_MARKER",
     "HARNESS_INSPECT_MARKER",
@@ -198,20 +217,33 @@ export async function cancel(
   run: RunRecord,
   afterClaim?: () => void,
 ): Promise<"result" | "taken_over" | "cancelled"> {
+  const targets: RunRecord[] = [];
   const winner = await withAdmissionLock(async () => {
-    const winner = await withRunLock(
-      run.paths.lock,
-      async () => {
-        const existing = await readClaim(run.paths.claim);
-        return existing ?? claim(run.paths.claim, "cancelled");
-      },
-      true,
-    );
-    await removeTicket(run.id);
-    return winner;
+    const records = await listRuns();
+    let ancestor = run.parentRunId;
+    while (ancestor) {
+      const parent = await readRun(ancestor);
+      if ((await readClaim(parent.paths.claim)) === "taken_over") return "taken_over" as const;
+      ancestor = parent.parentRunId;
+    }
+    const visit = async (current: RunRecord): Promise<"result" | "taken_over" | "cancelled"> => {
+      const winner = await withRunLock(
+        current.paths.lock,
+        async () =>
+          (await readClaim(current.paths.claim)) ?? claim(current.paths.claim, "cancelled"),
+        true,
+      );
+      if (winner === "taken_over") return winner;
+      await removeTicket(current.id);
+      targets.push(current);
+      for (const child of records.filter((r) => r.parentRunId === current.id)) await visit(child);
+      return winner;
+    };
+    return visit(run);
   });
   if (winner === "cancelled") afterClaim?.();
   if (winner === "taken_over") return winner;
+  for (const child of targets.filter((r) => r.id !== run.id)) await signalCancelled(child);
   if (winner === "result") {
     const result = await readResult(run).catch(() => null);
     const remaining = (result?.finishedAt ?? run.finishedAt ?? 0) + SHUTDOWN_MS - Date.now();
@@ -221,6 +253,10 @@ export async function cancel(
     await reconcile(run);
     return winner;
   }
+  await signalCancelled(run);
+  return winner;
+}
+async function signalCancelled(run: RunRecord): Promise<void> {
   await reconcile(run);
   if ((run.process.state === "live" || run.process.state === "unresolved") && run.process.pid) {
     try {
@@ -229,7 +265,6 @@ export async function cancel(
       if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error;
     }
   }
-  return winner;
 }
 
 class EventCursor {
@@ -479,7 +514,8 @@ export async function runForeground(
   if (stopped(options) || !run.rex) return { run };
   if (!before && run.access === "inspect") before = await savedBefore(run);
   events.watch(run.rex.blockId);
-  if ((await readClaim(run.paths.claim)) === "cancelled") {
+  if ((await readClaim(run.paths.claim)) === "cancelled" || (await claimedAncestor(run))) {
+    await cancel(run);
     const location = await locate(run.rex.blockId, run.rex);
     if (location) await closeBlock(location);
   }

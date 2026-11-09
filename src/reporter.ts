@@ -2,7 +2,7 @@ import { appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { claim, readClaim, withProtocolLock } from "./claims.ts";
+import { claim, outsideAdmission, readClaim, withProtocolLock } from "./claims.ts";
 import {
   acceptWritten,
   inboxEntries,
@@ -15,10 +15,19 @@ import {
 } from "./inbox.ts";
 import { inboxDecision, settlementDecision, type ProtocolSnapshot } from "./protocol.ts";
 import { registerGitRead } from "./git-read.ts";
-import { atomicWrite, type ResultFile, type RunRecord } from "./records.ts";
+import {
+  atomicWrite,
+  isTerminal,
+  listRuns,
+  readRun,
+  updateActivity,
+  type ResultFile,
+  type RunRecord,
+} from "./records.ts";
+import { outcomeOf, packDelivery, type DeliveryOutcome } from "./delivery.ts";
 import { inspectViolations, readViolations, type ToolSnapshot } from "./restrictions.ts";
 import { deriveOutcome } from "./results.ts";
-import { updateMemberProvider } from "./admission.ts";
+import { park, readLimits, tryWake, updateMemberProvider, wake } from "./admission.ts";
 
 export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
   process.umask(0o077);
@@ -48,6 +57,8 @@ export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
   let context: ExtensionContext | undefined;
   let polling = false;
   let settling = false;
+  let hasSettled = false;
+  const sentOutcomes = new Set<string>();
   let timer: ReturnType<typeof setInterval> | undefined;
   const snapshot = async (
     ctx: ExtensionContext,
@@ -75,18 +86,78 @@ export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
     });
     await markConsumed(run, entries, userTexts);
   };
-  const dispatch = async (ctx: ExtensionContext, entries: InboxEntry[]) => {
+  const descendantState = async (ctx: ExtensionContext) => {
+    const branch = ctx.sessionManager.getBranch();
+    const seen = new Set<string>();
+    const texts: string[] = [];
+    for (const entry of branch) {
+      if (entry.type !== "message") continue;
+      if (entry.message.role === "user") texts.push(JSON.stringify(entry.message.content));
+      if (entry.message.role === "toolResult" && entry.message.toolName === "subagent") {
+        const details: unknown = entry.message.details;
+        if (
+          details &&
+          typeof details === "object" &&
+          "runId" in details &&
+          typeof details.runId === "string"
+        )
+          seen.add(details.runId);
+      }
+    }
+    const pending: DeliveryOutcome[] = [];
+    let live = false;
+    for (const child of (await listRuns()).filter((r) => r.parentRunId === run.id)) {
+      const winner = await readClaim(child.paths.claim);
+      const ready =
+        winner === "taken_over" ||
+        ((child.process.state === "exited" || child.process.state === "unresolved") &&
+          (winner !== null || isTerminal(child.lifecycle)));
+      if (!ready) {
+        live = true;
+        continue;
+      }
+      if (
+        (child.background || !seen.has(child.id)) &&
+        !texts.some((text) => text.includes(`[subagent outcome ${child.id}]`))
+      )
+        pending.push(await outcomeOf(child, winner));
+    }
+    return { pending, live };
+  };
+  const dispatch = async (
+    ctx: ExtensionContext,
+    entries: InboxEntry[],
+    outcomes: DeliveryOutcome[] = [],
+  ) => {
     const unsent = entries.filter(
       (entry) => entry.ack?.state === "accepted" && entry.ack.sentAt === null,
     );
-    if (!unsent.length) return;
+    if (!unsent.length && !outcomes.length) return;
     await markSent(run, unsent);
     const mode = ctx.isIdle() ? "prompt" : "steer";
-    pi.sendUserMessage(
-      messageText(unsent.map((entry) => entry.message)),
-      mode === "steer" ? { deliverAs: "steer" } : undefined,
+    const packed = packDelivery(
+      outcomes.map((outcome) => ({
+        ...outcome,
+        text: outcome.text,
+      })),
+      50 * 1024 - outcomes.length * 48,
+      2000 - outcomes.length,
+    );
+    // A path-only packed entry still needs its delivery identity.
+    const descendantText =
+      packed.runIds.map((id) => `[subagent outcome ${id}]`).join("\n") +
+      (packed.content ? `\n${packed.content}` : "");
+    for (const id of packed.runIds) sentOutcomes.add(id);
+    outsideAdmission(() =>
+      pi.sendUserMessage(
+        [messageText(unsent.map((entry) => entry.message)), descendantText]
+          .filter(Boolean)
+          .join("\n\n"),
+        mode === "steer" ? { deliverAs: "steer" } : undefined,
+      ),
     );
     log("inbox_sent", { ids: unsent.map((entry) => entry.message.id), mode });
+    if (packed.runIds.length) log("descendants_sent", { ids: packed.runIds, mode });
   };
   const drain = async (ctx: ExtensionContext) => {
     await withProtocolLock(run.paths.lock, async () => {
@@ -94,7 +165,12 @@ export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
       await consume(ctx, entries);
       const decision = inboxDecision(await snapshot(ctx, entries));
       if (decision !== "none") await acceptWritten(run, entries);
-      if (decision !== "defer") await dispatch(ctx, entries);
+      if (
+        decision !== "defer" &&
+        !(hasSettled && ctx.isIdle()) &&
+        !(await readRun(run.id)).activity?.parked
+      )
+        await dispatch(ctx, entries);
     });
   };
   // One settlement owner, including inbox decisions. Pi defers the next turn until it returns.
@@ -112,9 +188,30 @@ export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
       await consume(ctx, entries);
       if (inboxDecision(await snapshot(ctx, entries, "settling")) === "defer")
         await acceptWritten(run, entries);
-      const decision = settlementDecision(await snapshot(ctx, entries, "settling"));
+      const descendants = await descendantState(ctx);
+      const decision = settlementDecision({
+        ...(await snapshot(ctx, entries, "settling")),
+        descendants: { pending: descendants.pending.length > 0, live: descendants.live },
+      });
+      if (
+        decision === "send" &&
+        descendants.pending.length &&
+        descendants.pending.every((outcome) => sentOutcomes.has(outcome.runId))
+      )
+        return "stay";
       if (decision === "send") {
-        await dispatch(ctx, entries);
+        if ((await readRun(run.id)).activity?.parked) {
+          await updateActivity(run.id, (activity) => {
+            activity.readyToWake = true;
+          });
+          return "wake";
+        }
+        await dispatch(ctx, entries, descendants.pending);
+        return "stay";
+      }
+      if (decision === "wait" || decision === "park") {
+        await park(run.id, "settled");
+        log("parked", { reason: decision });
         return "stay";
       }
       if (decision !== "publish") return decision;
@@ -133,6 +230,7 @@ export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
       log("result_claimed", { outcome: result.outcome });
       return "exit";
     });
+    if (action === "wake" && (await tryWake(run.id))) await settle(ctx, aborted, quitting);
     if (action === "exit" && !quitting) ctx.shutdown();
   };
 
@@ -146,11 +244,24 @@ export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
   // stay on the session and resource loader. Re-check after reload, before the next model turn,
   // and exit if the callable set expanded.
   const enforceRestriction = async (ctx: ExtensionContext, when: string): Promise<void> => {
-    if (run.access !== "read" && run.access !== "inspect") return;
     const active = pi.getActiveTools();
+    const nestingBanned = run.access === "read" || run.depth >= (await readLimits()).depth;
     const all = toolSnapshots();
-    const extras =
-      run.access === "read" ? readViolations(active, all) : inspectViolations(active, all);
+    const extras = [
+      ...(run.access === "read"
+        ? readViolations(active, all)
+        : run.access === "inspect"
+          ? inspectViolations(active, all)
+          : []),
+      ...(nestingBanned
+        ? all
+            .filter(
+              (tool) =>
+                ["subagent", "subagent_control"].includes(tool.name) && tool.exposure !== "hidden",
+            )
+            .map((tool) => tool.name)
+        : []),
+    ];
     log("tool_set", { when, active, all, extras });
     if (!extras.length || halted) return;
     halted = true;
@@ -198,7 +309,18 @@ export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
     timer = setInterval(() => {
       if (!context || polling || shutdown) return;
       polling = true;
-      void drain(context)
+      void (async () => {
+        if (!context) return;
+        await drain(context);
+        if (hasSettled && context.isIdle() && !settling) {
+          settling = true;
+          try {
+            await settle(context, false);
+          } finally {
+            settling = false;
+          }
+        }
+      })()
         .catch((error: unknown) => {
           log("inbox_error", { reason: error instanceof Error ? error.message : String(error) });
         })
@@ -207,11 +329,42 @@ export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
         });
     }, INBOX_POLL_MS);
   });
-  pi.on("before_agent_start", async (_event, ctx) => {
+  pi.on("before_agent_start", async (event, ctx) => {
+    hasSettled = false;
+    if (event.messageType === "user" && !(event.prompt ?? "").includes("[subagent ")) {
+      await updateActivity(run.id, (activity) => {
+        activity.parked = null;
+        activity.readyToWake = false;
+      });
+    } else await wake(run.id);
     await enforceRestriction(ctx, "before_agent_start");
   });
-  pi.on("model_select", async (event) => {
+  pi.on("model_select", async (event, ctx) => {
+    await updateActivity(run.id, (activity, record) => {
+      activity.parked = null;
+      activity.readyToWake = false;
+      record.effective = settings(ctx);
+    });
     await updateMemberProvider(run.id, event.model.provider);
+  });
+  pi.on("input", async (event) => {
+    if (event.source !== "extension")
+      await updateActivity(run.id, (activity) => {
+        activity.parked = null;
+        activity.readyToWake = false;
+      });
+  });
+  pi.on("tool_execution_start", async (event) => {
+    await updateActivity(run.id, (activity) => {
+      activity.tools.push({ id: event.toolCallId, name: event.toolName });
+    });
+    log("tool_started", { id: event.toolCallId, name: event.toolName });
+  });
+  pi.on("tool_execution_end", async (event) => {
+    await updateActivity(run.id, (activity) => {
+      activity.tools = activity.tools.filter((tool) => tool.id !== event.toolCallId);
+    });
+    log("tool_ended", { id: event.toolCallId, name: event.toolName, isError: event.isError });
   });
   pi.on("ui_prompt_start", (event) => {
     log("ui_prompt_start", { kind: event.kind, title: event.title ?? "Pi dialog" });
@@ -252,6 +405,7 @@ export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
   });
   pi.on("agent_settled", async (event, ctx) => {
     log("agent_settled", { aborted: event.aborted, shutdown });
+    hasSettled = true;
     settling = true;
     try {
       if (!shutdown) await settle(ctx, event.aborted);
@@ -293,6 +447,10 @@ export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
           .filter((entry) => entry.ack?.state === "accepted")
           .map((entry) => entry.message);
         await atomicWrite(join(dirname(run.paths.run), "takeover-messages.json"), pending);
+        await updateActivity(run.id, (activity) => {
+          activity.parked = null;
+          activity.readyToWake = false;
+        });
         await claim(run.paths.claim, "taken_over");
         return null;
       });
