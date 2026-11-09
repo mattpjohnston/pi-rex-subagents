@@ -1,156 +1,168 @@
 # Design
 
-This document describes how pi-rex-subagents works and why. It covers the whole design, including parts the first release does not build yet. Those parts are marked **(later)**.
+How pi-rex-subagents works, and why. This is for people changing the code. The [README](../README.md) covers using it.
 
-## Boundaries
+## Who does what
 
-Delegation stays a real, fresh Pi process running directly in a Rex terminal.
+A subagent is an ordinary Pi process running in a Rex tab.
 
-- The parent chooses tasks, instructions, models, worktrees, sequencing, and review.
-- Pi owns the child conversation, tools, model interaction, and saved session.
-- Rex owns terminals, navigation, layout, process observation, and status display.
-- The extension owns launch options, admission, the child lifecycle, checkout coordination, and result delivery.
+- The parent model decides what to run: the tasks, models, worktrees, order, and how to review the results.
+- Pi runs each subagent's conversation and tools, and saves its session.
+- Rex runs the terminals and handles tabs, focus, and process status.
+- The extension starts subagents, decides when each may start, tracks each run until it ends, keeps writers out of each other's way, and gets the result back to the parent.
 
-There is no role catalogue, no workflow engine, no worktree manager, and no automatic retry or resume. A label never selects policy. Any child with a shell can write, whatever its task is called.
+The extension has no roles, workflows, worktree management, or automatic retries. A label is only a tab name. Any subagent with a shell can write files, whatever its task says.
 
-## Placement
+## Tabs
 
-Each child opens as a background tab (`--focus=false`) in the parent's own Rex session, named after its label. The extension never switches your view and never splits panes. You can move or split children with Rex's own controls. The extension tracks each child by its stable Rex block ID and resolves its current location when it needs it, so moving a tab never changes ownership.
+Each subagent opens as a new tab in the parent's Rex session, named after its label, without taking focus. The extension never splits panes or switches your view. You can move a subagent's tab or split it with Rex's own controls. The extension tracks each subagent by its Rex block ID, which doesn't change when it moves, and looks up its current tab when it needs it.
 
-Child tabs sit in the parent's session, not a dedicated one, for two reasons. Rex draws status on tabs, not on session headings, so a waiting child should appear right under its parent. And a session per parent multiplies sessions quickly.
+Subagents go in the parent's session rather than a session of their own. Rex shows status dots on tabs, not on session names, so a subagent waiting for you shows up right under its parent. A session per parent also multiplies quickly.
 
-Children are launched with direct argv (`rex window new ... --shell none -- pi ...`), never by typing into a shell. Rex has no environment option, so the few values passed to a child go through `/usr/bin/env K=V` in its argv. Anyone on the machine can read those with `ps`, so they are never secrets. Provider credentials stay in Pi's own storage.
+The extension starts each subagent with `rex window new ... --shell none -- pi ...`, so no shell parses the command. Rex can't set environment variables for a new tab, so the few values a subagent needs are passed as `/usr/bin/env K=V` in its arguments. Any user on the machine can read those with `ps`, so they are never secrets. Provider credentials stay in Pi's own storage.
 
-**Finished tabs.** A completed child closes its tab after a grace period (60 seconds by default, `closeCompletedAfter` in `limits.json`). Rex does not report which session the app is showing, so a tab counts as viewed while it is the active tab of its session. A viewed tab is never closed, and a tab you leave waits a few more seconds so tabbing past it does not close it. The check errs towards keeping tabs. A tab whose label differs from the launch label is kept: `rex/keep.lua` (the `subagents_keep` action) and `/subagents keep` add a pin to the label, and a tab the human renamed or turned into a shared tab counts too. The label is the only state, so it is visible in the sidebar and undone by removing the pin. Only completed, never-taken-over children with confirmed exit close automatically; other outcomes keep their tab as evidence. The parent's runtime does the closing, so tabs of a parent that has exited stay until `/subagents clear`.
+### Closing finished tabs
 
-## Run record, claim, and lock
+When a subagent completes and its process has exited, the parent closes its tab after `closeCompletedAfter` seconds (60 by default, set in `limits.json`).
 
-Each run has one directory under `runs/<run-id>/` in the state directory, with private permissions. It holds:
+Rex doesn't report which session the app is showing, so the extension treats a tab as viewed while it is the selected tab in its session. It never closes a viewed tab, and waits 5 more seconds after you switch away so that tabbing past one doesn't close it. The check can only err towards keeping a tab. A tab you're looking at is always the selected one. A tab left selected in a session you've walked away from just stays open longer.
 
-- `run.json`, the run record. It has the resolved launch settings, checkout root, access, Rex IDs, lifecycle state, process observation, and the parent's Pi session ID. The parent writes it before launching the child. It is parsed and validated on every read.
-- `claim`, which decides who owns the outcome. Its content is `result`, `taken_over`, or `cancelled`.
-- `lock`, a directory that settlement, takeover, cancellation, and message acceptance hold while they claim.
-- `result.json`, `task.md`, `events.jsonl` (the child reporter's events), `inbox/`, and `session/` (the child's full Pi session).
+A tab whose label no longer matches the subagent's label is kept. `rex/keep.lua` (the `subagents_keep` action) and `/subagents keep` add `📌` to the label, and renaming or sharing the tab changes it too. The label is the only record of this, so you can see it in the sidebar and undo it by removing the pin.
 
-The lifecycle is `admitting`, then `starting`, then `running`, then one outcome: `completed`, `failed`, `aborted`, `incomplete`, `taken_over`, or `cancelled`. Process state is separate: `live`, `exited`, `unresolved` (still alive after a grace period), or `unknown` (Rex unreachable). A settled result does not prove the process has exited.
+Only completed subagents that were never taken over close automatically. Failed, cancelled, and taken-over ones keep their tabs so you can see what happened. The parent's Pi does the closing, so if the parent has exited, its subagents' tabs stay until a `/subagents clear`.
 
-**One claim per run.** Settlement, takeover, and cancellation each write their outcome to a private temporary file, sync it, and hard-link it into place as `claim`. The link fails if a claim exists, so the first link wins, and a crash cannot leave an empty claim behind. Each of the three holds the run lock while it claims. The lock directory is published atomically with its holder's process ID and start time, so any process can recover it once the holder is gone, under the admission lock.
+## Runs
 
-- **Settlement.** On `agent_settled`, the child reporter takes admission then run lock and reads the claim. Under `cancelled` or `result` it exits; under `taken_over` it stays alive without publishing. With no claim, pending descendant outcomes and unsent accepted messages go together in one user turn after wake admission. Sent-but-unconsumed messages block publication; live descendants cause parking. Only when these clear does it write the result, claim `result`, and shut down. This is the sole nested settlement owner.
-- **Takeover.** `/subagent-takeover` claims `taken_over` before it acknowledges anything. If settlement or cancellation already won, takeover fails visibly. A reloaded child reads the claim at load, so a reload after takeover still does not publish.
-- **Cancellation.** The parent claims `cancelled` before it signals the child. If the claim says `taken_over`, it leaves the child alone. A child that hangs after claiming `result` can still be closed, and its outcome stays unchanged.
+Each run has a private directory, `runs/<run-id>/`, in the state directory:
 
-Only `session_shutdown` with reason `quit` may publish a failure result. Pi emits the same event for reload and session switches. A managed child refuses to replace its session before its outcome is claimed.
+- `run.json` is the run record: settings, repository root, access, Rex IDs, state, process state, and the parent's Pi session ID. The parent writes it before starting the subagent, and every read validates it.
+- `claim` records who decided how the run ended: `result`, `taken_over`, or `cancelled`.
+- `lock` is a directory held while anything writes the claim or accepts a message.
+- `result.json`, `task.md`, `events.jsonl` (what the subagent's side of the extension saw), `inbox/`, and `session/` (the subagent's full Pi session).
 
-**Completion needs a validated result and confirmed process exit.** After a result, the parent waits a bounded shutdown grace (10 seconds) for the exit. If the process is still alive, the parent returns the answer marked as an unresolved process and keeps the checkout reserved. Cancellation waits up to 30 seconds, because a child interrupted in the middle of a tool call can take that long to exit. Startup has a deadline, and tasks have none. A Rex launch is never retried after a timeout, because the first attempt may have succeeded.
+A run goes from `admitting` to `starting` to `running`, then ends `completed`, `failed`, `aborted`, `incomplete`, `taken_over`, or `cancelled`. Process state is tracked separately as `live`, `exited`, `unresolved` (still alive after its shutdown grace), or `unknown` (Rex unreachable). A finished answer doesn't mean the process has exited.
 
-Rex's `done` status is display state, not a result. The parent follows exits and status through one `rex events --all --json` stream, filtered by its children's block IDs. A session-scoped stream would lose a child you moved to another session. A block liveness check covers the gaps. Rex exit code 3 means the block is gone. Exit code 4 means Rex is unreachable, and then nothing is released.
+### The claim
+
+Three things can end a run: the subagent finishing, you taking it over, and the parent cancelling it. Each writes its outcome to a temporary file, syncs it, and hard-links it to `claim`. Linking fails if `claim` already exists, so the first one wins, and a crash can't leave an empty claim. Each holds the run's lock while it does this. The lock directory records its holder's process ID and start time, so another process can remove it once that holder is gone.
+
+- **Finishing.** When Pi reports the agent has settled, the subagent's side of the extension takes the lock and reads the claim. If the run was cancelled, it exits. If it was taken over, it stays running and reports nothing. Otherwise it first deals with anything still owed to it: outcomes from its own subagents and accepted messages. It sends those to the model in one turn and waits. It writes the result and claims `result` only once nothing is owed, nothing is unread, and none of its own subagents are still running.
+- **Takeover.** `/subagent-takeover` claims `taken_over` before it tells you anything. If the run already ended, it says so and does nothing. After a `/reload` the subagent reads the claim again, so a taken-over session still won't report or exit.
+- **Cancelling.** The parent claims `cancelled` before signalling the subagent. It leaves a taken-over subagent alone. A subagent that hangs after claiming its result can still be closed, and its result stays.
+
+Only a real quit may record a failure on shutdown, because Pi sends the same shutdown event for reloads and session switches. A subagent refuses to switch sessions before its run has ended.
+
+### Finishing for real
+
+A run counts as finished only when there's a valid result and Rex confirms the process exited. After the result, the parent waits up to 10 seconds for the exit. If the process is still alive, the parent hands back the answer marked unresolved and keeps the repository reserved. Cancelling waits up to 30 seconds, because a subagent interrupted in the middle of a tool call can take that long to exit. Startup has a 60-second limit, and tasks have none. The extension never retries a Rex launch after a timeout, because the first attempt may have worked.
+
+Rex's `done` status is only display. The parent follows exits and status through one `rex events --all --json` stream, filtered to its subagents' block IDs, and checks each block directly when the stream drops. Rex exits with code 3 when a block is gone and 4 when Rex can't be reached. On 4, the extension frees nothing.
 
 ## Access modes
 
-**`read`** launches Pi with `--no-extensions --no-mcp --tools read,grep,find,ls,git_read`, plus the extension as the only extension. `--tools` alone is not enough, because MCP tools stay callable without `--no-mcp`. At every `session_start`, including after `/reload`, the reporter checks the active and loadable tools. If anything beyond the five allowed tools is present, it fails the run before the model acts.
+`read` starts Pi with `--no-extensions --no-mcp --tools read,grep,find,ls,git_read`, plus this extension. `--tools` alone isn't enough, because MCP tools stay callable without `--no-mcp`. At every session start, including after `/reload`, the subagent checks its active and loadable tools, and fails the run before the model does anything if it finds a tool outside those five.
 
-`git_read` runs Git with an argument array and no shell. It allows `log`, `show`, `blame`, `diff`, `ls-files`, `rev-parse`, `status`, `shortlog`, and `grep`. It refuses the options that write files or run commands, including unique prefixes of long options and `-O` inside a bundle of short options. A repository's own config can still run commands through Git, so `git_read` also does the following:
+`git_read` runs Git with an argument list and no shell. It allows `log`, `show`, `blame`, `diff`, `ls-files`, `rev-parse`, `status`, `shortlog`, and `grep`. It refuses options that write files or run commands, including abbreviated long options and `-O` bundled with other short options. A repository's own config can also make Git run commands, so `git_read`:
 
-- It reads attributes from the empty tree (`--attr-source`), with an empty attributes file and no system attributes. That stops filter and diff drivers.
-- It disables hooks, fsmonitor, external diff, text conversion, signature display, optional locks, and lazy fetching from promisor remotes.
-- It removes every inherited `GIT_*` variable.
+- reads attributes from the empty tree (`--attr-source`), with an empty attributes file and no system attributes, which stops filter and diff drivers;
+- turns off hooks, fsmonitor, external diff, text conversion, signature display, optional locks, and fetching missing objects from a remote;
+- removes every inherited `GIT_*` environment variable.
 
-Each of these rules has a test that plants the command in a real repository and shows it does not run.
+Each rule has a test that plants a command in a real repository and checks it doesn't run.
 
-**`inspect`** is the normal environment with `--exclude-tools edit,write`, checked at every `session_start`. It keeps the shell, MCP, and trusted extensions. It is admitted as a reader. Before launch and after exit, the parent fingerprints the checkout:
+`inspect` is the normal setup with `--exclude-tools edit,write`, checked at every session start. It keeps the shell, MCP, and extensions, and counts as a reader. Before launch and after exit, the parent records the repository's state:
 
-- For Git, it records HEAD, every ref, the staged entries and index flags, the repository's config, hooks, and `info/` files, and a content hash of every file under the root, including untracked and ignored ones.
-- Elsewhere, it records a content hash of every file under the root.
+- In a Git repository: HEAD, every ref, the staged entries and index flags, the repository's config, hooks, and `info/` files, and a hash of every file under the root, including untracked and ignored files.
+- Anywhere else: a hash of every file under the directory.
 
-The result's `checkout` field is `clean`, `changed` with the paths, or `unknown` when a size or time budget runs out. The field never changes the outcome. The fingerprint hashes contents because HEAD plus `git status` misses writes to ignored files, `skip-worktree` edits, and new refs. It cannot see writes outside the checkout or changes reverted before exit.
+The result says `clean`, `changed` with the changed paths, or `unknown` if the size or time limit ran out. This never changes whether the run succeeded. The hashes are of file contents because HEAD plus `git status` misses writes to ignored files, `skip-worktree` edits, and new refs. They can't see writes outside the repository or changes undone before the subagent exits.
 
-**`write`** uses the normal Pi environment.
+`write` is the normal Pi setup.
 
-Children use Pi's normal project-trust resolution. The reporter observes the `project_trust` event and returns `undecided`, so a child waiting on the trust prompt can raise a notice. The extension never makes the decision itself.
+Subagents use Pi's normal trust prompts. The extension watches for the trust event so it can tell you a subagent is waiting, and always answers "undecided", which leaves the decision to Pi and you.
 
-## Admission
+## Deciding when a subagent starts
 
-Admission is machine-wide, through files, with no daemon. A lock directory serializes decisions. Each waiting launch holds one ticket with a sequence number. Each live child is a member of one reservation for its checkout.
+Before a subagent starts, the extension decides whether it may run now or must wait. The extension calls this admission. It works machine-wide, through files, with no background service. One lock directory serializes decisions. Each waiting launch holds a numbered ticket. Each running subagent belongs to one reservation for its repository.
 
-Checkouts are identified by canonical path: the Git working-tree root, or the real directory. Two checkouts conflict when one contains the other, so a nested repository conflicts with its outer checkout. Sibling worktrees do not conflict.
+A repository is identified by its real path: the Git working-tree root, or the directory itself. Two paths conflict when one contains the other, so a repository nested inside another conflicts with it. Separate worktrees don't conflict.
 
-| Situation                                  | Rule                |
-| ------------------------------------------ | ------------------- |
-| Readers and inspectors on one checkout     | Overlap             |
-| A writer and anything else on one checkout | The later one waits |
-| Writers in separate worktrees              | Overlap             |
+| Situation                                              | Rule                |
+| ------------------------------------------------------ | ------------------- |
+| `read` and `inspect` subagents in one repository       | Run together        |
+| A `write` subagent and anything else in one repository | The later one waits |
+| `write` subagents in separate worktrees                | Run together        |
 
-Admission is FIFO, so a newer reader never passes an older waiting writer. Checkout conflicts are checked before capacity, and only tickets waiting purely for capacity hold a place in the capacity line. A ticket waiting on a checkout does not hold a slot it cannot use.
+Waiting launches go in order, so a newer reader never jumps an older waiting writer. Repository conflicts are checked before the cap on running subagents, and only launches waiting for a free slot hold a place in that line. A launch blocked on a repository doesn't take a slot it can't use.
 
-The active ceiling counts live children across every parent, including children a human has taken over. Optional per-provider ceilings work the same way. There is no writer ceiling, because checkout exclusion already keeps writers apart.
+The `active` cap counts running subagents across every parent, including ones you've taken over. Per-provider caps work the same way. There is no separate cap on writers, since the repository rule already keeps them apart.
 
-A membership ends when Rex confirms the child's process exited, either because the block is gone or because the block's process has exited. If Rex is unreachable, the membership stays. A taken-over child keeps its membership until its process exits.
+A subagent's reservation ends when Rex confirms its process exited. If Rex can't be reached, the reservation stays. A taken-over subagent keeps its reservation until its process exits.
 
-The parent's own `edit` and `write` calls are refused inside a checkout a live child writer holds, including an edit in the same message as the launch. `bash` is never refused, because its targets cannot be known in advance. This is coordination for well-behaved tools, not a lock.
+While a `write` subagent holds a repository, the parent's own `edit` and `write` calls inside it are refused, including an edit in the same message as the launch. `bash` is never refused, because there's no way to know what a command will touch. This keeps cooperating tools apart. It isn't a lock.
 
-### Nesting
+### Nested subagents
 
-A `write` or `inspect` child can launch below the configured depth (default 2, counting the unmanaged parent's children as layer 1). Tools are not registered at the limit or in a reader. Inspectors default to inspect and cannot launch writers. Records identify the immediate parent run/session and root parent session; only the immediate parent receives results. Three rules keep admission free of deadlocks:
+`write` and `inspect` subagents can start their own subagents, down to `depth` levels below a session you started (2 by default). At the limit, and in `read` subagents, the `subagent` and `subagent_control` tools aren't registered. An `inspect` subagent's own subagents default to `inspect`, and it can't start a `write` one. Results go only to the immediate parent.
 
-- A descendant on an overlapping checkout joins its ancestor's reservation instead of queueing behind runs outside it.
-- A launch that would close a wait cycle is refused, naming the runs in the cycle.
-- A run parked on its descendants does not count against the ceilings, and it goes back through admission before its next model call.
+Nesting needs three extra rules, or subagents deadlock waiting for each other:
 
-The core is checked differentially against the model, and a disk-backed test checks the live snapshot shape: exited ancestry, parked members, human-owned members, detached outcomes, and queued tickets. Model-driven wakeups wait for capacity ahead of newer tickets. Takeover, human input, and model changes clear parking immediately, even over a ceiling.
+- A subagent working in its parent's repository joins the parent's reservation instead of queueing behind unrelated runs.
+- A launch that would complete a cycle of runs waiting on each other is refused, and the refusal names the runs.
+- A run waiting on its own subagents is "parked". It doesn't count against the caps, and it must get a slot back before its next model call. A parked run that's ready ahead of newer launches goes first. Your own actions, such as taking over, typing in its tab, or changing its model, count at once, even over a cap.
 
-The reporter owns `activity` in the run record: parking, wake readiness, foreground calls, and started tools. Admission serializes activity updates with parent lifecycle writes, preserving newer reporter fields. Foreground calls park before waiting; the last sibling return reacquires capacity before Pi can make its next model call. Settlement parks while descendants or accepted messages remain. A settled reporter never waits for capacity while holding a lock or a settlement callback: polling retries the wake, leaving takeover available.
+Joining a reservation waits for tool calls the parent already started, so an `edit` or `bash` that's running can't overlap the new subagent. It doesn't wait for a pending `subagent` call, or for a call that contains one, such as a codemode script that starts a subagent. Each of those finishes only after its subagent does, so waiting on it would deadlock. Pi reports every call a codemode script makes as a separate tool call, so an `edit` or `bash` inside the script still holds the join.
 
-**Join amendment.** Joining waits for every ancestor member's started tool except `subagent`, including non-launch siblings in the same assistant message. Waiting for the launching or sibling `subagent` would deadlock foreground nesting: it cannot end until its nested child finishes. Bash and every other started tool still hold the join. The member's edit/write guard sees pending launches in the assistant message and live descendant members. Bash remains an accepted coordination gap.
+While a parent has a live subagent in its reservation, its own `edit` and `write` in that repository are refused.
 
-A join does not wait for a pending `subagent` call, or for a call that encloses one, such as a codemode script that launches a child. Each of those ends only after its child finishes, so waiting on it would deadlock. Pi reports every call a codemode script makes as its own tool call, so an `edit`, `write`, or `bash` inside the script still holds the join.
+The subagent's side of the extension records what it's doing in `activity` in the run record: whether it's parked, whether it's ready to wake, and which tool calls are running. A subagent never waits for a slot while holding a lock, so you can always take it over.
 
-**One nested delivery owner.** Busy children retain background outcomes on disk without queueing a turn. At settlement, or polling after a parked settlement, the reporter reads immediate descendants and inbox messages under admission then run lock. Pending outcomes and unsent accepted messages go together in one `sendUserMessage` turn, after wake admission. Persisted `[subagent outcome <id>]` markers prove delivery on the active branch; sent-but-not-yet-persisted outcomes block publication. Foreground tool results carry the run ID and already count as delivered. Nested outcomes never use the unmanaged parent's `subagent-results` path. Takeover is ready immediately without waiting for the human's process exit. Cancellation, startup failure, and result/exit outcomes use the same path. With no waiting deliveries, sent inbox messages block publication, live descendants cause parking, and only then may the reporter claim a result. Exited immediate parents receive nothing; artifacts stay on disk.
+A busy subagent keeps its own subagents' outcomes on disk until it settles. Then it sends them, and any accepted messages, to the model in one turn. Delivery counts once the outcome's marker is in a saved message. Nested results never use the top-level `subagent-results` message. If a subagent's parent has gone, nothing is delivered and the files stay on disk.
 
-Cancellation claims the selected run and descendants under admission then each run lock, skipping human-owned subtrees. Claimed ancestors invalidate waiting tickets and refuse launches. Once Rex replies to an in-flight launch, the launcher rechecks claims and closes the exact new block if cancellation won. Observation lists the tree parent-first with indentation.
+Cancelling a run also cancels the runs below it, except ones you've taken over and anything below those. A cancelled ancestor makes waiting launches under it give up and new ones get refused. If Rex replies to a launch after its ancestor was cancelled, the launcher closes that new tab. Listings show each run under its parent, indented.
 
-The protocol model covers one run, not a descendant graph. Its exhaustive differential still checks the unchanged one-run table. Explicit descendant-table tests and real harness schedules check coalescing, busy outcomes, parking, and publication ordering.
+## Background results
 
-## Background delivery
+A background launch returns its run ID once the run is admitted or queued. Its outcome is ready once its claim exists and its process has exited, or once its shutdown grace has passed with the process still alive. A takeover is ready at once, so the parent hears about it without waiting for your session to end. What's ready is worked out from the run records and the parent's session file, not kept in memory.
 
-A background launch returns its run ID once the run is admitted or queued. Its outcome becomes pending once its claim exists and its process exit is confirmed, or once the shutdown grace ends with the process still alive. A takeover is pending at once, so the parent learns of it without waiting for the human's session to end. Pending state lives on disk, derived from the run records and the parent session.
+Results are batched. While the parent is busy, nothing is sent. When it finishes its turn, every ready result goes in one message. When it's idle, the extension waits 3 seconds for others finishing around the same time. Each batch is one `subagent-results` message listing its run IDs, capped at 50 KB or 2,000 lines in total. Results that don't fit are listed by run ID, outcome, and result path.
 
-Results are coalesced. While the parent is busy, nothing is sent. When it settles, every pending outcome goes in one message. While it is idle, the extension waits about three seconds for siblings that finish close together. Each delivery is one custom message with type `subagent-results`, listing its run IDs, capped at 50 KB or 2000 lines as a whole. Entries that do not fit become run ID, outcome, and result path.
+A result counts as delivered when a `subagent-results` message naming it is on the parent's current branch, including messages folded into a compaction summary. At every session start and `/tree` move, the extension sends any ready result not on the current branch. So after `/tree` to a branch without the delivery, it's sent again there. If the branch ends with a delivery the model never answered, as a crash between saving it and the model's turn would leave, the extension starts one turn with a short note instead of sending the results again.
 
-An outcome counts as delivered when a `subagent-results` entry naming it is on the parent's active branch. Entries a compaction summarized still count. On every `session_start` and `session_tree`, the extension delivers any pending outcome that is not on the active branch, so `/tree` to a branch without the delivery sends it again there. If the branch ends with a delivery that no response follows, as a crash between writing it and its turn would leave, reconciliation starts one turn with a short note instead of resending.
+What happens to background subagents when the parent changes session:
 
-Parent transitions:
+| Parent action                        | Background subagents                                                                                                                                                     |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `/reload`                            | Keep running. The reloaded extension picks them up again.                                                                                                                |
+| Quit                                 | Cancelled. Undelivered results are added to the session without starting a turn.                                                                                         |
+| `/new`, `/resume`, `/fork`, `/clone` | Pi asks first if any are running or queued, or results are undelivered. If you confirm, they're cancelled and the results are added to the old session before switching. |
+| A crash                              | Nothing. Reservations stay until the extension sees the processes have gone.                                                                                             |
 
-| Transition                           | Background children                                                                                                                                                                |
-| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/reload`                            | Keep running. The reloaded runtime reattaches and reconciles.                                                                                                                      |
-| `quit`                               | Cancelled. Undelivered outcomes are appended to the session without starting a turn.                                                                                               |
-| `/new`, `/resume`, `/fork`, `/clone` | Refused while children are live or queued or outcomes are undelivered, unless you confirm. On confirmation, children are cancelled and outcomes appended to the old session first. |
-| Crash                                | Nothing. Reservations stay until liveness finds the child gone.                                                                                                                    |
+No session change cancels a subagent you've taken over.
 
-Taken-over children are never cancelled by a transition.
+## Parent controls and messages
 
-## Parent control and inbox
+`subagent_control` has `list`, `cancel`, and `message`. There's no "wait" operation. `list` shows at most 30 runs: the parent's subagents and theirs. `cancel` takes the same path as `/subagents cancel`.
 
-The `subagent_control` tool has `list`, `cancel`, and `message`, with no model-facing wait operation. Listing is bounded to 30 and scopes by ancestry. Cancel uses the same claim-and-signal path as `/subagents cancel`, refuses human-owned subtrees, and can close a hung result winner after its shutdown grace without changing its outcome.
+A message is a file, `inbox/<id>.json`, holding the ID, run ID, text, sender (the parent's Pi session ID), and time. Its answer is a second file, `<id>.ack.json`, which says `accepted` (with when it was sent to the model, once it is), `consumed`, or `refused` (with the claim that caused it).
 
-Each message is a private, atomically replaced `inbox/<message-id>.json` with `id`, `runId`, `text`, `sender` (the parent Pi session ID), and `createdAt`. Before acknowledgment its state is implicitly `written`. The companion `<message-id>.ack.json` is one union: `accepted` with `acceptedAt` and nullable `sentAt`, `consumed` with those timestamps and `consumedAt`, or `refused` with the winning `claim` and `refusedAt`. Every ack includes `messageId` and `runId`. The model's `sent` state is an accepted ack with non-null `sentAt`.
+The subagent checks its inbox every 250 ms. It accepts a message only if the run hasn't ended, checked under the run lock, so a message can't slip in as the run finishes. It sends an accepted message with `pi.sendUserMessage`, as steering while the model is working or as a new prompt while it's idle, with the message ID in the text. It never types into the terminal, which could answer an open dialog. A message counts as consumed once its ID appears in a saved user message. Pi emits `message_end` before saving the message, so the check happens afterwards.
 
-The reporter polls every 250 ms rather than relying on filesystem notifications surviving atomic rename. Acceptance, dispatch, consumption, and claims take admission before run, so they can recover a confirmed dead lock holder in the same order. Acceptance rechecks the claim and refuses if any claim exists. Dispatch uses `pi.sendUserMessage` with the ID in the text, `deliverAs: "steer"` while working, or a prompt while idle. It never types into the terminal. Consumption requires finding that marker in a persisted user message. Pi emits `message_end` before appending to its session, so the reporter checks the branch after the event returns, during polling, and at settlement.
+The parent waits up to 10 seconds for an answer and reports `accepted`, `refused`, or `unacknowledged`. A message file on its own never counts as delivered. If you take over a subagent, the parent's `taken_over` result lists messages it had accepted but not yet read.
 
-The parent waits at most 10 seconds for an ack. Writing the message alone is never called delivery. Takeover saves a snapshot of accepted, unconsumed messages alongside the claim so the parent's `taken_over` outcome can list them, even if they are consumed later in the human-owned conversation.
+## Rex actions
 
-## Later additions
+`rex/next_waiting.lua` registers `subagents_next_waiting`. It reads the records of running subagents, picks the one that has waited longest for you, and selects its tab. `/subagents go next` runs the same script. It uses the run records rather than Rex status, because Pi's trust prompt doesn't show as a Rex status. With 48 running subagents it takes about 20 ms. Each time a subagent starts waiting, it writes one OSC 9 desktop notification to its own terminal.
 
-- **Rex additions.** `rex/next_waiting.lua` registers `subagents_next_waiting`. It reads live run records, picks the oldest human wait, and selects that block. `/subagents go next` runs the same script. The reporter writes one OSC 9 notice per wait to the child terminal. The parent follows `child_exited` and `program_status_changed` on `rex events --all --json`, filtered by block ID, and reconciles through block liveness if that stream drops.
+`rex/keep.lua` registers `subagents_keep`, which pins or unpins the selected tab.
 
 ## Models
 
-`models/` holds two exhaustive Python models of these rules.
+`models/` holds two Python models that try every ordering of their steps:
 
-- `admission.py` covers reservations, parking, cycle refusal, and ceilings.
-- `protocol.py` covers one run's lock, claim, inbox, settlement, takeover, and cancellation, including a parent crash.
+- `admission.py` covers reservations, parking, cycle refusal, and caps.
+- `protocol.py` covers one run's lock, claim, inbox, finishing, takeover, and cancellation, including a parent crash.
 
-Each explores every interleaving of its steps. Each also runs earlier design rules beside the current ones, labelled `e18` or `e19` in the code. A script exits nonzero unless the earlier rules fail where expected and the current rules pass. CI runs both models. Vitest differential tests drive the TypeScript admission core with generated states and compare inbox/settlement decisions against all 461 reachable current protocol states, including 18 sent-but-unconsumed settlements. Changing the wait rule to publish reproduces the model's unsafe `e19` mistake and fails the differential test.
+Each also runs earlier versions of the rules, labelled `e18` and `e19`, which had known bugs. A script fails unless the old rules fail where expected and the current rules pass. CI runs both. Vitest tests drive the TypeScript admission code with states generated by `admission.py`, and compare the inbox and finishing decisions against all 461 states `protocol.py` can reach.
 
-The models make each step atomic. Races inside a step, Rex and Pi failures, and branch navigation are covered by the real Pi and Rex harness instead.
+The models treat each step as indivisible. Races inside a step, Rex and Pi failures, and `/tree` moves are covered by the end-to-end tests instead.

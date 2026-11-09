@@ -1,6 +1,6 @@
 # Development
 
-Use Node 26 and pnpm. Pi loads the TypeScript directly, so there is no build step.
+You need Node 26 and pnpm. Pi loads the TypeScript directly, so there's no build step.
 
 ```sh
 pnpm install
@@ -11,77 +11,79 @@ pnpm test
 pnpm models
 ```
 
-CI runs the same checks and the models on every push.
+CI runs all of these on every push.
 
-## Acceptance harness
+## End-to-end tests
 
-`pnpm harness <scenario>` runs one scenario against real Pi and Rex. Scenarios live in `harness/scenarios/`.
+The tests in `harness/` start a real Pi and real Rex, launch subagents through the extension, and check what actually happened: tabs, run records, result files, session files, and changed files. Run one with:
 
-| Scenario                                                                 | Covers                                                                                                                                                         |
-| ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `empty`                                                                  | The harness itself: a disposable Rex session, teardown, guard hashes                                                                                           |
-| `launch`                                                                 | Direct argv launch, TTY, cwd, instructions, model inheritance and override, thinking clamp                                                                     |
-| `status`                                                                 | Pi's native status in Rex, a blocking dialog, attention notices, `/subagents go`                                                                               |
-| `failures`                                                               | Provider errors, handled tool errors, aborts, cutoffs, bad results, oversized output, a hang after the result                                                  |
-| `continuation`                                                           | `continueFrom` forks and leaves the source unchanged                                                                                                           |
-| `takeover`                                                               | Steering, interruption, takeover against settlement and cancellation, reload after takeover                                                                    |
-| `trust`                                                                  | The project-trust prompt raises a notice, and the decision stays Pi's                                                                                          |
-| `admission`                                                              | Writer exclusion across parents, path identity, worktrees, ceilings, `limits.json`                                                                             |
-| `parallel`                                                               | Several real parallel calls in one message, abort, the parent guard                                                                                            |
-| `recovery`                                                               | Rex unreachable, launch timeout, parent crash, reload with a taken-over child                                                                                  |
-| `terminals`                                                              | Moves and splits, clear and dismiss by exact block ID                                                                                                          |
-| `read`, `readers`                                                        | Read restrictions and `git_read` under attack, reader admission                                                                                                |
-| `inspect`                                                                | Inspect restrictions and the checkout fingerprint                                                                                                              |
-| `double-load`                                                            | The extension loaded twice in one process registers once                                                                                                       |
-| `background`, `background-cap`, `background-reload`, `background-switch` | Background delivery, the cap, reload and crash recovery, session transitions                                                                                   |
-| `compose`                                                                | Investigation, implementation, review, and worktree compositions through the public tools                                                                      |
-| `control`                                                                | Model-driven list/message/cancel, cross-parent scoping, real Rex status, working steering, idle prompting, dialog safety, stale lock, queued/live cancellation |
-| `nesting-model`                                                          | Real model-driven same-checkout foreground read review at active=1, model override, immediate-parent result                                                    |
-| `nesting`                                                                | Sibling-tool join-wait, write guard, descendant priority, internal FIFO, busy coalescing before publication                                                    |
-| `nesting-capacity`                                                       | Coordinator/worker/review parking, edited ceilings, wake-before-ticket priority, parked and descendant takeover                                                |
-| `nesting-human`                                                          | Human typing and provider changes clear parking and count immediately above the ceiling                                                                        |
-| `nesting-cycle`                                                          | Cross-tree and wrapper wait-cycle refusal, inspect defaults/write refusal, depth-limit toolsets                                                                |
-| `nesting-inbox`                                                          | Cancelled descendant plus accepted unsent message persisted in one turn, both processed before publication                                                     |
-| `nesting-races`                                                          | Public descendant list/cancel, in-flight Rex reply cleanup, orphan retention without upward delivery                                                           |
-| `control-races`                                                          | Deterministic settlement orderings, takeover's pending messages and cancellation refusal, hung result cancellation, parent crash after cancellation claim      |
-| `attention`                                                              | Oldest-wait selection from another session, OSC 9 once per wait, same-session move, dropped event stream reconciled through liveness                           |
+```sh
+pnpm harness <scenario>
+```
 
-Every run gets its own scratch directory under the system temp directory, its own state and session directories, and Rex sessions labelled `pirs-h-`. Teardown removes only the sessions this run created, and removes the scratch directory, even when the run fails. A run refuses to start if a `pirs-h-` session is left over from an earlier run. Run output is archived under the git-ignored `.harness-runs/`.
+Scenarios live in `harness/scenarios/`:
 
-Each run hashes Pi's `settings.json`, any installed `extensions/subagent.ts`, and `trust.json` before and after, plus every path in the colon-separated `HARNESS_GUARD_FILES`. It fails if any of them changed.
+| Scenario            | Checks                                                                                                        |
+| ------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `empty`             | The test setup itself: a throwaway Rex session is created and removed                                         |
+| `launch`            | Launching, the working directory, instructions, model inheritance and overrides, thinking levels              |
+| `status`            | Pi's status in Rex, a dialog waiting for you, the notice, `/subagents go`                                     |
+| `failures`          | Provider errors, tool errors, aborts, cut-off replies, bad results, oversized output, a hang after the result |
+| `continuation`      | `continueFrom` copies the conversation and leaves the original untouched                                      |
+| `takeover`          | Steering, interrupting, and taking over in every order against finishing and cancelling                       |
+| `trust`             | Pi's trust prompt raises a notice, and the decision stays with Pi                                             |
+| `admission`         | Writers kept apart across parents, path handling, worktrees, caps, `limits.json`                              |
+| `parallel`          | Several calls in one message, aborting them, refusing the parent's edits                                      |
+| `recovery`          | Rex unreachable, a launch timeout, a parent crash, reloading with a taken-over subagent                       |
+| `terminals`         | Moving and splitting tabs, `/subagents clear` and `dismiss`                                                   |
+| `autoclose`         | Finished tabs close after the delay, stay while viewed, and stay when pinned                                  |
+| `read`, `readers`   | Read-only restrictions and `git_read` against hostile repositories, readers sharing a repository              |
+| `inspect`           | Inspect restrictions and change detection                                                                     |
+| `double-load`       | The extension loaded twice in one Pi registers once                                                           |
+| `background`        | Background results, batching, and cancelling                                                                  |
+| `background-cap`    | The size cap on a batch of results                                                                            |
+| `background-reload` | Reloads and crashes while background subagents run                                                            |
+| `background-switch` | `/new`, `/resume`, `/fork`, `/clone`, quit, and `/tree`                                                       |
+| `compose`           | Investigation, implementation, review, and worktree setups through the public tools                           |
+| `control`           | `subagent_control` driven by a real model                                                                     |
+| `control-races`     | Messages and cancelling as a subagent finishes or is taken over, and a parent crash mid-cancel                |
+| `nesting-model`     | A subagent starting its own subagent, driven by a real model                                                  |
+| `nesting`           | Nested subagents in a shared repository, ordering, and refused edits                                          |
+| `nesting-capacity`  | Parked runs and the caps                                                                                      |
+| `nesting-human`     | Typing in or changing the model of a parked subagent                                                          |
+| `nesting-cycle`     | Refusing launches that would deadlock, and the depth limit                                                    |
+| `nesting-inbox`     | Nested results and messages arriving together                                                                 |
+| `nesting-races`     | Cancelling a tree of subagents, including a launch Rex hasn't answered yet                                    |
+| `attention`         | Jumping to the oldest waiting subagent, desktop notifications, and a dropped event stream                     |
 
-- `HARNESS_MODEL` selects the model for children, and for parents unless `HARNESS_PARENT_MODEL` is set. The default is `openrouter/nvidia/nemotron-3.5-lightning:free`. Any cheap model you are logged in to works; the harness tests lifecycle, not task quality.
-- `HARNESS_OVERRIDE_MODEL` is the explicit override in the `launch` scenario. It must differ from `HARNESS_MODEL`, and a different provider makes the check stronger.
-- `HARNESS_FAILURE_CASE` takes one case of the `failures` scenario, or a comma-separated list.
+Each run gets its own temporary directory, state, and session directories, and Rex sessions named `pirs-h-...`. When it ends, pass or fail, it removes the sessions it created and its temporary directory, and nothing else. It refuses to start if a `pirs-h-` session is left from an earlier run. Output is kept in `.harness-runs/`, which git ignores.
 
-Free models have daily request limits. If a scenario fails with HTTP 429, wait for the limit to reset or switch `HARNESS_MODEL` instead of rerunning it. Keep the machine awake during long runs (`caffeinate -i` on macOS); a sleep mid-run fails the scenario on timeouts or connection errors.
+Each run hashes Pi's `settings.json`, `extensions/subagent.ts`, and `trust.json` before and after, plus any files listed in `HARNESS_GUARD_FILES` (colon-separated), and fails if one changed. Pi itself updates `settings.json` once after this package's version goes up, when it records that it has shown the changelog, so the first run after a version bump can fail this check.
 
-The trust scenario expects Pi's default `"ask"` trust policy. It checks that the selected answer is "this session only" before pressing Enter, so it never saves a trust decision.
+Settings for the tests:
 
-The installed Rex cannot move a block or a window into another session. `attention` therefore checks a same-session move to another tab. The acceptance check for a child moved to another session waits on a Rex version that can do that move. The parent already follows `rex events --all --json`, so that case needs no extension change when Rex gains it.
+- `HARNESS_MODEL` is the model for subagents, and for parents unless `HARNESS_PARENT_MODEL` is set. It defaults to a free OpenRouter model. Any cheap model you're logged in to works, since the tests check behaviour, not answer quality.
+- `HARNESS_OVERRIDE_MODEL` is the model the `launch` scenario switches to. It must differ from `HARNESS_MODEL`, and a different provider is a better test.
+- `HARNESS_FAILURE_CASE` runs one case of `failures`, or a comma-separated list.
 
-## Testing hooks
+Free models have daily limits. If a scenario fails with HTTP 429, wait for the limit to reset or use another model rather than rerunning. Keep the machine awake during long runs (`caffeinate -i` on macOS), because sleeping mid-run causes timeouts.
 
-These environment variables exist for the harness. They are not user features.
+The `trust` scenario needs Pi's default `"ask"` trust setting. It checks that "this session only" is selected before pressing Enter, so it never saves a trust decision.
 
-- `PI_SUBAGENTS_CHILD_NO_DISCOVERY=1` adds `--no-extensions` to children, so the user's installed extensions do not load in harness children.
-- `PI_SUBAGENTS_CHILD_EXTENSIONS` lists extra extension paths passed to children, such as the harness's dialog, hold, and fault tools.
-- `PI_SUBAGENTS_LOG_TOOLS` makes child reporters log every tool call with its arguments.
-- `PI_SUBAGENTS_FINGERPRINT_MAX_BYTES` and `PI_SUBAGENTS_FINGERPRINT_MAX_MS` lower the inspect fingerprint budget.
-- `PI_SUBAGENTS_COALESCE_MS` overrides the three-second idle delivery window.
-- `PI_SUBAGENTS_ADMISSION_METRICS` records admission lock timings.
-- The `subagents:test-takeover-claimed` event on Pi's extension bus lets a harness extension delay the takeover acknowledgement after the claim.
-- `subagents:test-settlement` provides a test-only boundary object with `before` (an awaitable barrier) and `hold` (stay idle for this boundary). The harness uses it to force pre-publication messaging and a held-idle child without registering another settlement owner.
-- `subagents:test-cancel-claimed` lets the harness SIGKILL its own disposable parent between a durable cancellation claim and signalling. `HARNESS_CANCEL_CRASH=1` enables that listener only in the harness extension.
+Rex can't move a tab into another session, so `attention` tests a move to another tab in the same session instead. The extension follows `rex events --all --json`, which would already cover a move between sessions.
 
-`pnpm exec vitest run test/inbox.test.ts --reporter=verbose --disableConsoleIntercept` prints the exhaustive protocol differential's state count and runtime. `models/export_protocol.py` exports every reachable current state, not a random sample. The tests also exercise private ack files, persisted-user consumption, timeout handling, ancestry scoping, and parent-only stale-lock recovery without a reporter helping.
+The tests assert on records, events, and saved sessions, never on what the model wrote.
 
-Phase-six deterministic plans replace assistant tool-call batches rather than
-wrapping launches in a holding tool, which would itself hold join-wait. A
-foreground wrapper has a separate cycle-refusal check. A real provider runs on
-every turn; assertions read records, events, and persisted session rows, not the
-model's wording. `nesting-model` uses no fixed plan.
+## Test-only settings
 
-The live graph adds started-tool join blockers and known caller-dependency edges
-to the admission model's facts. The same pure TypeScript admission core and
-Python differential runner remain the oracle; no expected model result changed.
+The tests use these. They aren't meant for normal use.
+
+- `PI_SUBAGENTS_CHILD_NO_DISCOVERY=1` starts subagents with `--no-extensions`, so your own installed extensions don't load in test subagents.
+- `PI_SUBAGENTS_CHILD_EXTENSIONS` lists extra extensions to load in subagents, such as the tests' dialog, hold, and fault tools.
+- `PI_SUBAGENTS_LOG_TOOLS` logs every tool call a subagent makes, with its arguments.
+- `PI_SUBAGENTS_FINGERPRINT_MAX_BYTES` and `PI_SUBAGENTS_FINGERPRINT_MAX_MS` lower the size and time limits for `inspect` change detection.
+- `PI_SUBAGENTS_COALESCE_MS` changes the 3-second wait before sending results to an idle parent.
+- `PI_SUBAGENTS_ADMISSION_METRICS` records how long admission holds its lock.
+- Three events on Pi's extension bus let test extensions pause the extension at precise points: `subagents:test-takeover-claimed` (after a takeover is claimed, before it's acknowledged), `subagents:test-settlement` (before a subagent finishes), and `subagents:test-cancel-claimed` (after a cancel is claimed, before the signal). `HARNESS_CANCEL_CRASH=1` makes the test parent kill itself at that last point.
+
+`pnpm exec vitest run test/inbox.test.ts --reporter=verbose --disableConsoleIntercept` prints how many protocol states the model comparison checked and how long it took.
