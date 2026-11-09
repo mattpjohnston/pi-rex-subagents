@@ -6,20 +6,16 @@ The extension owns launch options, admission, the child lifecycle, checkout coor
 
 ## Status
 
-The first release covers:
+It covers:
 
 - Several children at once, foreground or background.
 - Machine-wide admission. Readers share a checkout, a writer gets it alone, and an active-children ceiling applies across every parent on the machine.
 - `read` children restricted to file tools and an allowlisted `git_read`.
 - `inspect` children that keep a shell and MCP but report afterwards whether the checkout changed during the run.
 - Background results pushed into the parent session, coalesced, and reconciled after reloads and crashes.
-- Parent controls to list runs, cancel a stuck child, and send acknowledged stop or hold orders without typing into its terminal.
-- Nested write/inspect delegates with shared reservations, parked capacity, and immediate-parent result delivery, to a configured depth (default 2).
-
-These are designed but not built yet:
-
-- A Rex action that jumps to the next waiting child.
-- A desktop notice when a child waits.
+- A `subagent_control` tool so the parent can list runs, cancel a stuck child, and send acknowledged stop or hold orders without typing into its terminal.
+- Nested `write` and `inspect` children, which share their parent's checkout reservation, to a configured depth (default 2).
+- A Rex action that jumps to the oldest child waiting for you, and a desktop notice when a child starts waiting.
 
 See [docs/design.md](docs/design.md) for the full design.
 
