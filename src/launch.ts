@@ -534,6 +534,8 @@ async function watch(
     // The launcher asked Rex and its reply was never saved, so a child may be running.
     run.diagnostic = `Uncertain Rex launch: asked before a reload or crash, reply not saved. Not retried; the reservation stays until Rex shows the tab or a person clears it. Events: ${run.paths.events}`;
     transition(run, (await readClaim(run.paths.claim)) === "cancelled" ? "cancelled" : "failed");
+    // Not exited, so the reservation holds; unresolved, so the parent still gets the outcome.
+    run.process = { state: "unresolved", pid: null };
     await writeRun(run);
     return { run };
   }

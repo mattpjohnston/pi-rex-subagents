@@ -42,7 +42,7 @@ Each run has a private directory, `runs/<run-id>/`, in the state directory:
 - `lock` is a directory held while anything writes the claim or accepts a message.
 - `rex-launch`, written just before Rex is asked for the tab, then `result.json`, `task.md`, `events.jsonl` (what the subagent's side of the extension saw), `inbox/`, and `session/` (the subagent's full Pi session).
 
-A run goes from `admitting` to `starting` to `running`, then ends `completed`, `failed`, `aborted`, `incomplete`, `taken_over`, or `cancelled`. Process state is tracked separately as `live`, `exited`, `unresolved` (still alive after its shutdown grace), or `unknown` (Rex unreachable). A finished answer doesn't mean the process has exited.
+A run goes from `admitting` to `starting` to `running`, then ends `completed`, `failed`, `aborted`, `incomplete`, `taken_over`, or `cancelled`. Process state is tracked separately as `live`, `exited`, `unresolved` (may still be alive after the run ended: past its shutdown grace, or an uncertain launch), or `unknown` (Rex unreachable). A finished answer doesn't mean the process has exited.
 
 `src/records.ts` holds the rules every writer shares. An ended run is never waiting or queued. A process still alive after its run ended is `unresolved`, except after a takeover, where a person is using it. Several processes write the same record from their own copy (the launcher, a canceller, the parent's refresh), so the first ending and a confirmed exit are kept on disk, whatever an older copy says.
 

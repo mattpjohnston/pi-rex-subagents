@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 import { readReservations } from "../src/admission.ts";
+import { outcomeReady } from "../src/delivery.ts";
 import {
   atomicWrite,
   parse,
@@ -446,7 +447,7 @@ it("a resumed launch that may have asked Rex before a crash never claims an exit
       await resumed;
       expect(await readRun(run.id)).toMatchObject({
         lifecycle: ending,
-        process: { state: "unknown" },
+        process: { state: "unresolved", pid: null },
       });
     } finally {
       vi.unstubAllEnvs();
@@ -479,7 +480,12 @@ it("a resumed launch that may already have asked Rex never asks again", async ()
     });
     const calls = (await readFile(log, "utf8").catch(() => "")).split("\n").filter(Boolean);
     expect(calls.filter((call) => call === "window new")).toEqual([]);
-    expect(resumed.run).toMatchObject({ lifecycle: "failed", process: { state: "unknown" } });
+    // Not exited, so the reservation holds; unresolved, so the parent still gets the outcome.
+    expect(resumed.run).toMatchObject({
+      lifecycle: "failed",
+      process: { state: "unresolved", pid: null },
+    });
+    expect(outcomeReady(resumed.run, null)).toBe(true);
     expect(resumed.run.diagnostic).toMatch(/Not retried/);
   } finally {
     vi.unstubAllEnvs();
