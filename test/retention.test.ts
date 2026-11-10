@@ -3,7 +3,9 @@ import { access, chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { admit, keepRunsForMs, readLimits } from "../src/admission.ts";
+import { admit, readLimits } from "../src/admission.ts";
+
+const keepRunsForMs = async () => (await readLimits()).keepRunsForMs;
 import { privateDirectory, readRun, runPaths, writeRun, type RunRecord } from "../src/records.ts";
 import { cleanupRuns, retentionDecision } from "../src/retention.ts";
 

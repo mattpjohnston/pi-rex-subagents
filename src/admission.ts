@@ -43,37 +43,27 @@ const LimitsFile = Type.Object(
   },
   { additionalProperties: false },
 );
-export async function readLimits(): Promise<Limits> {
+/** limits.json, read fresh on every call. Missing means defaults; malformed throws, naming the file. */
+export async function readLimits(): Promise<
+  Limits & { closeCompletedAfterMs: number | null; keepRunsForMs: number | null }
+> {
   const path = join(stateDir(), "limits.json");
+  let input: Static<typeof LimitsFile> = {};
   try {
-    const input = parse(LimitsFile, await readJson(path));
-    return { active: input.active ?? 4, depth: input.depth ?? 2, providers: input.providers ?? {} };
+    input = parse(LimitsFile, await readJson(path));
   } catch (error) {
-    if (isMissing(error)) return { active: 4, depth: 2, providers: {} };
-    throw new Error(`Invalid admission limits ${path}: ${errorText(error)}`, { cause: error });
+    if (!isMissing(error))
+      throw new Error(`Invalid admission limits ${path}: ${errorText(error)}`, { cause: error });
   }
-}
-/** Seconds a completed child's tab stays before closing, from limits.json; false keeps tabs. */
-export async function closeCompletedAfterMs(): Promise<number | null> {
-  const path = join(stateDir(), "limits.json");
-  try {
-    const value = parse(LimitsFile, await readJson(path)).closeCompletedAfter ?? 60;
-    return value === false ? null : value * 1000;
-  } catch (error) {
-    if (isMissing(error)) return 60_000;
-    throw new Error(`Invalid limits ${path}: ${errorText(error)}`, { cause: error });
-  }
-}
-/** Days to retain ended, delivered runs; false keeps everything. */
-export async function keepRunsForMs(): Promise<number | null> {
-  const path = join(stateDir(), "limits.json");
-  try {
-    const value = parse(LimitsFile, await readJson(path)).keepRunsFor ?? 30;
-    return value === false ? null : value * 86_400_000;
-  } catch (error) {
-    if (isMissing(error)) return 30 * 86_400_000;
-    throw new Error(`Invalid limits ${path}: ${errorText(error)}`, { cause: error });
-  }
+  const closeAfter = input.closeCompletedAfter ?? 60;
+  const keepDays = input.keepRunsFor ?? 30;
+  return {
+    active: input.active ?? 4,
+    depth: input.depth ?? 2,
+    providers: input.providers ?? {},
+    closeCompletedAfterMs: closeAfter === false ? null : closeAfter * 1000,
+    keepRunsForMs: keepDays === false ? null : keepDays * 86_400_000,
+  };
 }
 const Member = Type.Object(
   {

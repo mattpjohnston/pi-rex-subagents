@@ -76,10 +76,10 @@ it("publishes the lock and its holder atomically to another process", async () =
 });
 it("reads limits fresh, defaults only when absent, and names malformed files", async () => {
   await scratch(async (dir) => {
-    expect(await readLimits()).toEqual({ active: 4, depth: 2, providers: {} });
+    expect(await readLimits()).toMatchObject({ active: 4, depth: 2, providers: {} });
     const path = join(dir, "limits.json");
     await writeFile(path, JSON.stringify({ active: 2, providers: { p: 1 } }));
-    expect(await readLimits()).toEqual({ active: 2, depth: 2, providers: { p: 1 } });
+    expect(await readLimits()).toMatchObject({ active: 2, depth: 2, providers: { p: 1 } });
     await writeFile(path, JSON.stringify({ active: 1, depth: 3 }));
     expect((await readLimits()).active).toBe(1);
     for (const invalid of [

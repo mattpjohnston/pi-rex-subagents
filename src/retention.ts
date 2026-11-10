@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { rename, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { keepRunsForMs, removeRunAdmission } from "./admission.ts";
+import { readLimits, removeRunAdmission } from "./admission.ts";
 import { readClaim, withAdmissionLock, type Claim } from "./claims.ts";
 import {
   isMissing,
@@ -75,7 +75,7 @@ function leavesFirst(records: RunRecord[]): RunRecord[] {
 }
 
 export async function cleanupRuns(): Promise<void> {
-  const keepMs = await keepRunsForMs();
+  const keepMs = (await readLimits()).keepRunsForMs;
   if (keepMs === null) return;
   const records = new Map((await listRuns()).map((run) => [run.id, run]));
   for (const run of leavesFirst([...records.values()])) {

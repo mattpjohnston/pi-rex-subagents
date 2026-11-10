@@ -8,7 +8,7 @@ import {
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { contains } from "./admission-core.ts";
-import { closeCompletedAfterMs, park, readLimits, wake, writerOnPath } from "./admission.ts";
+import { park, readLimits, wake, writerOnPath } from "./admission.ts";
 import { canonicalTarget, checkoutRoot } from "./checkout.ts";
 import { ownedRuns, registerControl, treeOrder } from "./control.ts";
 import { live, registerSubagentsCommand, statusLine } from "./commands.ts";
@@ -363,7 +363,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   // Grace and viewing timestamps live in memory: a reload only restarts the grace period.
   const closing = new Map<string, { eligibleSince: number; lastViewedAt: number | null }>();
   const autoClose = async (runs: RunRecord[], tabs: Map<string, TabView>) => {
-    const graceMs = await closeCompletedAfterMs();
+    const graceMs = (await readLimits()).closeCompletedAfterMs;
     if (graceMs === null) return;
     for (const run of runs) {
       const tab = tabs.get(run.id);

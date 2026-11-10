@@ -2,7 +2,9 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { closeCompletedAfterMs } from "../src/admission.ts";
+import { readLimits } from "../src/admission.ts";
+
+const closeCompletedAfterMs = async () => (await readLimits()).closeCompletedAfterMs;
 import { closeDecision, VIEW_SETTLE_MS } from "../src/terminals.ts";
 
 const grace = 60_000;
