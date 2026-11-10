@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
-import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { Type } from "typebox";
 import {
   DEFAULT_MAX_BYTES,
@@ -152,9 +152,28 @@ async function bootstrapGit(
   );
 }
 
-/** Keyed by directory: its repository's hash format fixes the ID, so a lookup costs no Git call. */
+/**
+ * The ID depends on the repository's hash format, so it is cached per repository, found as the
+ * nearest .git above cwd with stat calls rather than a Git process. A repository created inside
+ * a directory already read gets its own entry.
+ */
+async function repositoryKey(cwd: string): Promise<string> {
+  let dir = resolve(cwd);
+  while (true) {
+    try {
+      await lstat(join(dir, ".git"));
+      return dir;
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) return cwd;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) return cwd;
+    dir = parent;
+  }
+}
 async function emptyTreeId(cwd: string): Promise<string> {
-  const cached = emptyTrees.get(cwd);
+  const key = await repositoryKey(cwd);
+  const cached = emptyTrees.get(key);
   if (cached) return cached;
   const hashed = await bootstrapGit(cwd, [
     "hash-object",
@@ -165,7 +184,7 @@ async function emptyTreeId(cwd: string): Promise<string> {
   ]);
   if (hashed.code !== 0) throw new Error(hashed.stderr.trim() || "Cannot hash the empty tree");
   const id = hashed.stdout.trim();
-  emptyTrees.set(cwd, id);
+  emptyTrees.set(key, id);
   return id;
 }
 

@@ -1,10 +1,25 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, lstat, mkdtemp, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { refusedGitArgument, runGitRead, validateGitReadArgs } from "../src/git-read.ts";
+import {
+  refusedGitArgument,
+  runGitRead,
+  runHardenedGit,
+  validateGitReadArgs,
+} from "../src/git-read.ts";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -273,4 +288,29 @@ it("does not lazily fetch a missing object through a promisor remote set in repo
   await rm(marker);
   await runGitRead(root, ["show", "HEAD:f"]);
   await expect(lstat(marker)).rejects.toThrow(/ENOENT/);
+});
+
+it("reads a SHA-256 repository created inside a directory it already read", async () => {
+  const outer = await mkdtemp(join(tmpdir(), "pirs-git-sha256-"));
+  try {
+    const git = (cwd: string, ...args: string[]) =>
+      execFileSync("git", ["-C", cwd, "-c", "user.name=a", "-c", "user.email=a@b", ...args]);
+    git(outer, "init", "-q");
+    await writeFile(join(outer, "x"), "1\n");
+    git(outer, "add", ".");
+    git(outer, "commit", "-qm", "outer");
+    const sub = join(outer, "sub");
+    await mkdir(sub);
+    expect((await runHardenedGit(sub, ["diff"])).code).toBe(0);
+    git(sub, "init", "-q", "--object-format=sha256");
+    await writeFile(join(sub, "y"), "1\n");
+    git(sub, "add", ".");
+    git(sub, "commit", "-qm", "nested");
+    await writeFile(join(sub, "y"), "2\n");
+    const diff = await runHardenedGit(sub, ["diff"]);
+    expect([diff.code, diff.stderr.trim()]).toEqual([0, ""]);
+    expect(diff.stdout).toContain("+2");
+  } finally {
+    await rm(outer, { recursive: true, force: true });
+  }
 });
