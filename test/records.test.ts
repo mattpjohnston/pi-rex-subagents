@@ -1,7 +1,7 @@
 import { progressUpdate } from "../src/index.ts";
 import { observeRexEvent, runForeground, startBackground } from "../src/launch.ts";
 import { RexEvents } from "../src/rex.ts";
-import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
@@ -252,6 +252,40 @@ it("a launch that fails before asking Rex for a tab holds no reservation", async
       runForeground(run, "unused-entry", new RexEvents(), undefined, () => {}),
     ).rejects.toThrow();
     expect((await readReservations()).flatMap((r) => r.members)).toEqual([]);
+  } finally {
+    vi.unstubAllEnvs();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("a queued launch that fails gives up its place in the queue", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pirs-queued-"));
+  vi.stubEnv("PI_SUBAGENTS_STATE_DIR", root);
+  try {
+    await localLaunchTools(root);
+    const holder = {
+      ...record(root),
+      id: "b".repeat(24),
+      paths: runPaths(join(root, "runs", "b".repeat(24))),
+    };
+    holder.lifecycle = "running";
+    holder.process = { state: "live", pid: null };
+    await privateDirectory(join(root, "runs", holder.id));
+    await writeRun(holder);
+    await privateDirectory(join(root, "reservations"));
+    await atomicWrite(join(root, "reservations", `${holder.id}.json`), {
+      id: holder.id,
+      members: [{ runId: holder.id, access: "write", checkout: root, provider: "test" }],
+    });
+    const run = { ...record(root), background: true };
+    await privateDirectory(join(root, "runs", run.id));
+    await writeRun(run);
+    const started = startBackground(run, "unused-entry", new RexEvents(), undefined, () => {}, {});
+    expect((await started.ready).queue?.reason).toBe("checkout");
+    await writeFile(join(root, "limits.json"), "{");
+    await expect(started.done).rejects.toThrow(/Invalid admission limits/);
+    expect(await readdir(join(root, "queue"))).toEqual([]);
+    expect((await readRun(run.id)).lifecycle).toBe("failed");
   } finally {
     vi.unstubAllEnvs();
     await rm(root, { recursive: true, force: true });

@@ -47,6 +47,7 @@ import {
 import {
   CANCELLATION_MS,
   LaunchInput,
+  abandon,
   cancel,
   prepareRun,
   reconcile,
@@ -154,12 +155,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     // A handed-off background run stays admitting while queued. The watcher owns it.
     if (handed.delete(event.toolCallId)) return;
     // A blocked or aborted preflight never executes the launch tool.
-    if (run.lifecycle === "admitting") {
-      await cancel(run);
-      transition(run, "cancelled");
-      run.process = { state: "exited", code: null };
-      await writeRun(run);
-    }
+    if (run.lifecycle === "admitting") await abandon(run, "cancelled");
   });
   pi.on("tool_call", async (event, ctx) => {
     if (!isToolCallEventType("edit", event) && !isToolCallEventType("write", event)) return;
@@ -298,15 +294,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         signal?.removeEventListener("abort", onAbort);
         if (!detach.signal.aborted) noteFinished();
       },
-      (error: unknown) => {
+      () => {
+        // runForeground recorded the failure; the launch call reports it if still waiting.
         watches.delete(run.id);
-        void readRun(run.id)
-          .then(async (current) => {
-            current.diagnostic = errorText(error);
-            if (!isTerminal(current.lifecycle)) transition(current, "failed");
-            await writeRun(current);
-          })
-          .catch(() => undefined);
+        signal?.removeEventListener("abort", onAbort);
       },
     );
     return {
@@ -537,12 +528,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         };
       } catch (error) {
         handed.delete(_id);
-        run.diagnostic = errorText(error);
-        if (run.lifecycle === "admitting") await cancel(run);
-        // An admitted launch with no reply may still exist in Rex. Never invent exit proof.
-        if (run.lifecycle === "admitting") run.process = { state: "exited", code: null };
-        if (!isTerminal(run.lifecycle)) transition(run, "failed");
-        await writeRun(run);
+        await abandon(run, "failed", error);
         throw error;
       } finally {
         active.delete(run.id);

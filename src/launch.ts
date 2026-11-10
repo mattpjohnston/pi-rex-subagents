@@ -458,6 +458,25 @@ async function savedBefore(run: RunRecord): Promise<Fingerprint | undefined> {
   }
   return undefined;
 }
+/**
+ * Ends a launch nobody will watch to completion. Before Rex is asked for a tab no process can
+ * exist, so its exit is certain; after that, exit proof only ever comes from Rex.
+ */
+export async function abandon(
+  run: RunRecord,
+  outcome: "cancelled" | "failed",
+  error?: unknown,
+): Promise<void> {
+  if (isTerminal(run.lifecycle) && error === undefined) return;
+  if (error !== undefined) run.diagnostic = errorText(error);
+  if (run.lifecycle === "admitting") {
+    await cancel(run);
+    run.process = { state: "exited", code: null };
+  }
+  if (!isTerminal(run.lifecycle)) transition(run, outcome);
+  await writeRun(run);
+}
+type Watched = { run: RunRecord; result?: ResultFile; checkout?: CheckoutReport };
 export async function runForeground(
   run: RunRecord,
   entry: string,
@@ -465,7 +484,23 @@ export async function runForeground(
   signal: AbortSignal | undefined,
   progress: Progress,
   options: WatchOptions = {},
-): Promise<{ run: RunRecord; result?: ResultFile; checkout?: CheckoutReport }> {
+): Promise<Watched> {
+  try {
+    return await watch(run, entry, events, signal, progress, options);
+  } catch (error) {
+    // The original error is the caller's answer; failing to record it must not replace it.
+    await abandon(run, "failed", error).catch(() => undefined);
+    throw error;
+  }
+}
+async function watch(
+  run: RunRecord,
+  entry: string,
+  events: RexEvents,
+  signal: AbortSignal | undefined,
+  progress: Progress,
+  options: WatchOptions,
+): Promise<Watched> {
   if (options.resume) {
     await launchWaits().get(run.id);
     Object.assign(run, await readRun(run.id));
@@ -497,10 +532,7 @@ export async function runForeground(
         return true;
       }));
     if (!starting) {
-      await cancel(run);
-      transition(run, "cancelled");
-      run.process = { state: "exited", code: null };
-      await writeRun(run);
+      await abandon(run, "cancelled");
       return { run };
     }
     progress(run);
