@@ -1,6 +1,8 @@
 /** Callable-set checks for restricted children. Hidden tools are unreachable; inspect still rejects a hidden edit or write. */
 
-export const READ_TOOLS = ["find", "git_read", "grep", "ls", "read"] as const;
+/** Launch flags and the callable-set checks both read these, so they cannot disagree. */
+export const READ_TOOLS = ["read", "grep", "find", "ls", "git_read"] as const;
+export const INSPECT_EXCLUDED = ["edit", "write"] as const;
 
 export interface ToolSnapshot {
   name: string;
@@ -26,7 +28,7 @@ export function inspectViolations(
   active: readonly string[],
   all: readonly ToolSnapshot[],
 ): string[] {
-  const banned = new Set(["edit", "write"]);
+  const banned = new Set<string>(INSPECT_EXCLUDED);
   const extras = new Set<string>();
   for (const name of active) if (banned.has(name)) extras.add(name);
   for (const tool of all) if (banned.has(tool.name)) extras.add(tool.name);

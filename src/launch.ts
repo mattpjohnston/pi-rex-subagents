@@ -35,6 +35,7 @@ import { InboxMessage } from "./inbox.ts";
 import { checkoutRoot } from "./checkout.ts";
 import { captureFingerprint, compareFingerprints, type Fingerprint } from "./fingerprint.ts";
 import { executable, resolveSettings, workingDirectory } from "./settings.ts";
+import { INSPECT_EXCLUDED, READ_TOOLS } from "./restrictions.ts";
 import {
   object,
   locate,
@@ -192,8 +193,8 @@ export async function childArgv(run: RunRecord, entry: string): Promise<string[]
     run.label,
   ];
   if (run.access === "read")
-    args.push("--no-extensions", "--no-mcp", "--tools", "read,grep,find,ls,git_read");
-  else if (run.access === "inspect") args.push("--exclude-tools", "edit,write");
+    args.push("--no-extensions", "--no-mcp", "--tools", READ_TOOLS.join(","));
+  else if (run.access === "inspect") args.push("--exclude-tools", INSPECT_EXCLUDED.join(","));
   args.push("-e", entry);
   // Testing hooks only: isolate child discovery and load scenario fault tools, not user features.
   // read already passes --no-extensions. inspect keeps discovered extensions unless the hook says otherwise.
