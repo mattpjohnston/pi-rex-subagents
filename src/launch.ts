@@ -532,8 +532,23 @@ async function watch(
   const launched = options.resume && run.rex && run.lifecycle !== "admitting";
   if (!launched && options.resume && (await mayHaveAskedRex(run))) {
     // The launcher asked Rex and its reply was never saved, so a child may be running.
-    run.diagnostic = `Uncertain Rex launch: asked before a reload or crash, reply not saved. Not retried; the reservation stays until Rex shows the tab or a person clears it. Events: ${run.paths.events}`;
-    transition(run, (await readClaim(run.paths.claim)) === "cancelled" ? "cancelled" : "failed");
+    run.diagnostic = `Uncertain Rex launch: asked before a reload or crash, reply not saved. Not retried; cancelled so a child that did start exits at its next settlement. The reservation stays until Rex shows the tab or a person clears it. Events: ${run.paths.events}`;
+    const winner = await withProtocolLock(
+      run.paths.lock,
+      async () => (await readClaim(run.paths.claim)) ?? claim(run.paths.claim, "cancelled"),
+    );
+    // A child that started may already have taken over or published; its claim decides.
+    if (winner === "taken_over") {
+      transition(run, "taken_over");
+      await writeRun(run);
+      return { run };
+    }
+    transition(
+      run,
+      winner === "result"
+        ? ((await readResult(run).catch(() => null))?.outcome ?? "failed")
+        : "cancelled",
+    );
     // Not exited, so the reservation holds; unresolved, so the parent still gets the outcome.
     run.process = { state: "unresolved", pid: null };
     await writeRun(run);

@@ -446,7 +446,7 @@ it("a resumed launch that may have asked Rex before a crash never claims an exit
       });
       await resumed;
       expect(await readRun(run.id)).toMatchObject({
-        lifecycle: ending,
+        lifecycle: "cancelled",
         process: { state: "unresolved", pid: null },
       });
     } finally {
@@ -481,11 +481,13 @@ it("a resumed launch that may already have asked Rex never asks again", async ()
     const calls = (await readFile(log, "utf8").catch(() => "")).split("\n").filter(Boolean);
     expect(calls.filter((call) => call === "window new")).toEqual([]);
     // Not exited, so the reservation holds; unresolved, so the parent still gets the outcome.
+    // The cancelled claim makes a child that did start exit at its next settlement.
     expect(resumed.run).toMatchObject({
-      lifecycle: "failed",
+      lifecycle: "cancelled",
       process: { state: "unresolved", pid: null },
     });
-    expect(outcomeReady(resumed.run, null)).toBe(true);
+    expect(await readFile(resumed.run.paths.claim, "utf8")).toBe("cancelled");
+    expect(outcomeReady(resumed.run, "cancelled")).toBe(true);
     expect(resumed.run.diagnostic).toMatch(/Not retried/);
   } finally {
     vi.unstubAllEnvs();
