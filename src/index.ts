@@ -71,6 +71,10 @@ export function progressUpdate(run: RunRecord): { text: string; attention: strin
   return { text: attention ?? statusLine(run), attention };
 }
 
+/** A top-level parent is refused only by writers; a nested member by any descendant (the spec). */
+function refusesParentEdits(access: unknown): boolean {
+  return Boolean(process.env.PI_SUBAGENTS_RUN_ID) || (access !== "read" && access !== "inspect");
+}
 async function sameMessageWriter(
   ctx: ExtensionContext,
   target: string,
@@ -82,8 +86,7 @@ async function sameMessageWriter(
     if (entry.message.role !== "assistant" || !Array.isArray(entry.message.content)) return null;
     for (const part of entry.message.content) {
       if (part.type !== "toolCall" || part.name !== "subagent") continue;
-      const access = part.arguments.access;
-      if (!process.env.PI_SUBAGENTS_RUN_ID && (access === "read" || access === "inspect")) continue;
+      if (!refusesParentEdits(part.arguments.access)) continue;
       const label =
         typeof part.arguments.label === "string" && part.arguments.label.trim()
           ? part.arguments.label.trim()
@@ -125,18 +128,20 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   pi.on("tool_execution_start", async (event, ctx) => {
     if (event.toolName !== "subagent") return;
     const input = parse(LaunchInput, event.args);
-    const root = await checkoutRoot(await workingDirectory(ctx.cwd, input.cwd));
-    intended.set(event.toolCallId, {
-      id: event.toolCallId,
-      label: input.label?.trim() || "pending launch",
-      checkoutRoot: root,
-    });
+    const guards = refusesParentEdits(input.access);
+    if (guards)
+      intended.set(event.toolCallId, {
+        id: event.toolCallId,
+        label: input.label?.trim() || "pending launch",
+        checkoutRoot: await checkoutRoot(await workingDirectory(ctx.cwd, input.cwd)),
+      });
     const run = await prepareRun(input, ctx, event.parentToolCallId);
-    intended.set(event.toolCallId, {
-      id: run.id,
-      label: run.label,
-      checkoutRoot: run.checkoutRoot,
-    });
+    if (guards)
+      intended.set(event.toolCallId, {
+        id: run.id,
+        label: run.label,
+        checkoutRoot: run.checkoutRoot,
+      });
     prepared.set(event.toolCallId, run);
     active.set(run.id, run);
   });
@@ -167,12 +172,6 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       const writer =
         (await sameMessageWriter(ctx, target)) ??
         [...intended.values()].find((run) => contains(run.checkoutRoot, target)) ??
-        [...active.values()].find(
-          (run) =>
-            run.access === "write" &&
-            run.lifecycle === "admitting" &&
-            contains(run.checkoutRoot, target),
-        ) ??
         (await writerOnPath(target, childId));
       if (writer)
         return {

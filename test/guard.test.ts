@@ -9,7 +9,11 @@ afterEach(async () => {
   if (dir) await rm(dir, { recursive: true, force: true });
 });
 
-async function toolCall(input: Record<string, unknown>, limits?: string) {
+async function toolCall(
+  input: Record<string, unknown>,
+  limits?: string,
+  launches: Record<string, unknown>[] = [],
+) {
   dir = await mkdtemp(join(tmpdir(), "pirs-guard-"));
   vi.stubEnv("PI_SUBAGENTS_STATE_DIR", dir);
   if (limits !== undefined) await writeFile(join(dir, "limits.json"), limits);
@@ -37,6 +41,14 @@ async function toolCall(input: Record<string, unknown>, limits?: string) {
   };
   await extension.default(pi);
   const ctx = { cwd: dir, sessionManager: { getBranch: () => [] } };
+  // A launch whose preflight fails still counts while its call is in flight.
+  for (const [index, args] of launches.entries())
+    await handlers
+      .get("tool_execution_start")?.(
+        { toolName: "subagent", toolCallId: `launch-${index}`, args },
+        ctx,
+      )
+      .catch(() => undefined);
   return handlers.get("tool_call")?.({ toolName: "edit", toolCallId: "t", input }, ctx);
 }
 
@@ -52,4 +64,14 @@ it("a malformed limits.json blocks launches, not the parent's own edits", async 
   expect(
     await toolCall({ path: "notes.md", oldText: "a", newText: "b" }, '{"active": 0}'),
   ).toBeUndefined();
+});
+
+it("a top-level read or inspect launch in flight does not refuse the parent's edit", async () => {
+  const edit = { path: "notes.md", oldText: "a", newText: "b" };
+  for (const access of ["read", "inspect"])
+    expect(await toolCall(edit, undefined, [{ task: "look", access }])).toBeUndefined();
+  expect(await toolCall(edit, undefined, [{ task: "change", access: "write" }])).toMatchObject({
+    block: true,
+  });
+  expect(await toolCall(edit, undefined, [{ task: "change" }])).toMatchObject({ block: true });
 });
