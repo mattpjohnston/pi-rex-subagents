@@ -353,6 +353,31 @@ it("a stale write keeps an ended run's live process unresolved", async () => {
   }
 });
 
+it("a resumed background watch that fails leaves no unhandled rejection", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pirs-resume-"));
+  vi.stubEnv("PI_SUBAGENTS_STATE_DIR", root);
+  vi.stubEnv("PI_SUBAGENTS_REX", join(root, "missing-rex"));
+  const unhandled: unknown[] = [];
+  const track = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", track);
+  try {
+    const run = { ...record(root), background: true };
+    await privateDirectory(join(root, "runs", run.id));
+    await writeRun(run);
+    // A reload resumes the watch and keeps only `done`, as index.ts does.
+    const { done } = startBackground(run, "unused-entry", new RexEvents(), undefined, () => {}, {
+      resume: true,
+    });
+    await expect(done).rejects.toThrow();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(unhandled).toEqual([]);
+  } finally {
+    process.off("unhandledRejection", track);
+    vi.unstubAllEnvs();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 it("repairs permissions on a pre-existing state directory", async () => {
   const root = await mkdtemp(join(tmpdir(), "pirs-permissions-"));
   try {

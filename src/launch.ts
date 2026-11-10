@@ -741,6 +741,8 @@ export function startBackground(
     release = resolve;
     refuse = reject;
   });
+  // A resumed watch has no launch call waiting on ready; done carries the failure to it.
+  ready.catch(() => undefined);
   let released = false;
   const note = (current: RunRecord) => {
     progress(current);
