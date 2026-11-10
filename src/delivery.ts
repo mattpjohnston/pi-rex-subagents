@@ -119,12 +119,15 @@ export function endsWithUnansweredDelivery(branch: readonly BranchNode[]): boole
  * once: the human may keep that session open indefinitely, and the parent should not wait.
  * A terminal record with no claim is a startup or reporter failure and is still an outcome.
  */
-export function outcomeReady(run: RunRecord, claim: Claim | null): boolean {
-  if (!run.background) return false;
+export function outcomeSettled(run: RunRecord, claim: Claim | null): boolean {
   const settled = run.process.state === "exited" || run.process.state === "unresolved";
   if (claim === "taken_over") return true;
   if (claim) return settled;
   return settled && isTerminal(run.lifecycle);
+}
+/** Background outcomes go to the parent session; nested ones go to the parent run instead. */
+export function outcomeReady(run: RunRecord, claim: Claim | null): boolean {
+  return run.background && outcomeSettled(run, claim);
 }
 
 export interface TransitionView {

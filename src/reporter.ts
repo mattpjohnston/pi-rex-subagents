@@ -17,14 +17,13 @@ import { inboxDecision, settlementDecision, type ProtocolSnapshot } from "./prot
 import { registerGitRead } from "./git-read.ts";
 import {
   atomicWrite,
-  isTerminal,
   listRuns,
   readRun,
   updateActivity,
   type ResultFile,
   type RunRecord,
 } from "./records.ts";
-import { outcomeOf, packDelivery, type DeliveryOutcome } from "./delivery.ts";
+import { outcomeOf, outcomeSettled, packDelivery, type DeliveryOutcome } from "./delivery.ts";
 import { inspectViolations, readViolations, type ToolSnapshot } from "./restrictions.ts";
 import { deriveOutcome } from "./results.ts";
 import { canLaunchChildren, park, tryWake, updateMemberProvider, wake } from "./admission.ts";
@@ -117,11 +116,7 @@ export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
     let live = false;
     for (const child of (await listRuns()).filter((r) => r.parentRunId === run.id)) {
       const winner = await readClaim(child.paths.claim);
-      const ready =
-        winner === "taken_over" ||
-        ((child.process.state === "exited" || child.process.state === "unresolved") &&
-          (winner !== null || isTerminal(child.lifecycle)));
-      if (!ready) {
+      if (!outcomeSettled(child, winner)) {
         live = true;
         continue;
       }
