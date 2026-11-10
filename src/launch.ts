@@ -30,7 +30,7 @@ import {
   type ModelSettings,
 } from "./records.ts";
 import { claim, readClaim, withAdmissionLock, withProtocolLock } from "./claims.ts";
-import { admit, claimedAncestor, readLimits, removeTicket } from "./admission.ts";
+import { admit, canLaunchChildren, claimedAncestor, removeTicket } from "./admission.ts";
 import { InboxMessage } from "./inbox.ts";
 import { checkoutRoot } from "./checkout.ts";
 import { captureFingerprint, compareFingerprints, type Fingerprint } from "./fingerprint.ts";
@@ -77,7 +77,7 @@ export async function prepareRun(
     ? await readRun(process.env.PI_SUBAGENTS_RUN_ID)
     : null;
   if (parentRun) {
-    if (parentRun.access === "read" || parentRun.depth >= (await readLimits()).depth)
+    if (!(await canLaunchChildren(parentRun)))
       throw new Error(`Nested launch refused: depth limit or read access on ${parentRun.id}`);
     if (parentRun.access === "inspect" && input.access === "write")
       throw new Error(

@@ -65,6 +65,10 @@ export async function readLimits(): Promise<
     keepRunsForMs: keepDays === false ? null : keepDays * 86_400_000,
   };
 }
+/** Read children, and children at the depth limit, get neither subagent tool. */
+export async function canLaunchChildren(run: RunRecord): Promise<boolean> {
+  return run.access !== "read" && run.depth < (await readLimits()).depth;
+}
 const Member = Type.Object(
   {
     runId: Type.String(),

@@ -8,7 +8,7 @@ import {
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { contains } from "./admission-core.ts";
-import { park, readLimits, wake, writerOnPath } from "./admission.ts";
+import { canLaunchChildren, park, readLimits, wake, writerOnPath } from "./admission.ts";
 import { canonicalTarget, checkoutRoot } from "./checkout.ts";
 import { ownedRuns, registerControl, treeOrder } from "./control.ts";
 import { live, registerSubagentsCommand, statusLine } from "./commands.ts";
@@ -115,7 +115,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     if ((await realpath(dirname(run.paths.run))) !== (await realpath(runDirectory(childId))))
       throw new Error("Child record path mismatch");
     registerReporter(pi, run);
-    if (run.access === "read" || run.depth >= (await readLimits()).depth) return;
+    if (!(await canLaunchChildren(run))) return;
   }
   registerControl(pi);
   const events = new RexEvents();

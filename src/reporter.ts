@@ -27,7 +27,7 @@ import {
 import { outcomeOf, packDelivery, type DeliveryOutcome } from "./delivery.ts";
 import { inspectViolations, readViolations, type ToolSnapshot } from "./restrictions.ts";
 import { deriveOutcome } from "./results.ts";
-import { park, readLimits, tryWake, updateMemberProvider, wake } from "./admission.ts";
+import { canLaunchChildren, park, tryWake, updateMemberProvider, wake } from "./admission.ts";
 import { TrustStatus } from "./trust-status.ts";
 
 export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
@@ -255,7 +255,7 @@ export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
   // and exit if the callable set expanded.
   const enforceRestriction = async (ctx: ExtensionContext, when: string): Promise<void> => {
     const active = pi.getActiveTools();
-    const nestingBanned = run.access === "read" || run.depth >= (await readLimits()).depth;
+    const nestingBanned = !(await canLaunchChildren(run));
     const all = toolSnapshots();
     const extras = [
       ...(run.access === "read"
