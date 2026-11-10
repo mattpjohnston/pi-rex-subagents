@@ -152,10 +152,9 @@ async function bootstrapGit(
   );
 }
 
+/** Keyed by directory: its repository's hash format fixes the ID, so a lookup costs no Git call. */
 async function emptyTreeId(cwd: string): Promise<string> {
-  const dir = await bootstrapGit(cwd, ["rev-parse", "--absolute-git-dir"]);
-  const key = dir.code === 0 ? dir.stdout.trim() : cwd;
-  const cached = emptyTrees.get(key);
+  const cached = emptyTrees.get(cwd);
   if (cached) return cached;
   const hashed = await bootstrapGit(cwd, [
     "hash-object",
@@ -166,7 +165,7 @@ async function emptyTreeId(cwd: string): Promise<string> {
   ]);
   if (hashed.code !== 0) throw new Error(hashed.stderr.trim() || "Cannot hash the empty tree");
   const id = hashed.stdout.trim();
-  emptyTrees.set(key, id);
+  emptyTrees.set(cwd, id);
   return id;
 }
 
