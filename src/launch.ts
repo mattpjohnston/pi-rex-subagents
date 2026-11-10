@@ -481,6 +481,10 @@ export async function runForeground(
   let before: Fingerprint | undefined;
   const launched = options.resume && run.rex && run.lifecycle !== "admitting";
   if (!launched) {
+    // Anything that can fail without launching runs before admission, so it can't strand a
+    // reservation that no process will ever release.
+    await requireLocalRex();
+    const argv = await childArgv(run, entry);
     const admitted = await admit(run, signal, progress, options.detach);
     if (admitted === "paused" || stopped(options)) return { run };
     const starting =
@@ -509,8 +513,6 @@ export async function runForeground(
       await atomicWrite(join(dirname(run.paths.run), "fingerprint-before.json"), before);
     }
     if (stopped(options)) return { run };
-    await requireLocalRex();
-    const argv = await childArgv(run, entry);
     let finishLaunch = () => {};
     const launchDone = new Promise<void>((resolve) => {
       finishLaunch = resolve;

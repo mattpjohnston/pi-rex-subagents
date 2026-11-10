@@ -4,7 +4,8 @@ import { RexEvents } from "../src/rex.ts";
 import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
+import { readReservations } from "../src/admission.ts";
 import {
   atomicWrite,
   parse,
@@ -17,6 +18,15 @@ import {
   writeRun,
 } from "../src/records.ts";
 
+/** A local Rex endpoint and a Pi executable, so a launch gets as far as admission without either. */
+async function localLaunchTools(root: string): Promise<void> {
+  const rex = join(root, "rex");
+  await writeFile(rex, `#!/bin/sh\nprintf '%s\\n' '{"endpoint":"unix:///rex.sock"}'\n`, {
+    mode: 0o700,
+  });
+  vi.stubEnv("PI_SUBAGENTS_REX", rex);
+  vi.stubEnv("PI_SUBAGENTS_PI", process.execPath);
+}
 function record(root: string): RunRecord {
   const id = "a".repeat(24);
   const dir = join(root, "runs", id);
@@ -148,6 +158,7 @@ it("records no live process when cancellation wins before Rex launch", async () 
   const previous = process.env.PI_SUBAGENTS_STATE_DIR;
   process.env.PI_SUBAGENTS_STATE_DIR = root;
   try {
+    await localLaunchTools(root);
     const run = record(root);
     await privateDirectory(join(root, "runs", run.id));
     await writeRun(run);
@@ -161,6 +172,7 @@ it("records no live process when cancellation wins before Rex launch", async () 
     expect(result.run.lifecycle).toBe("cancelled");
     expect(result.run.process).toEqual({ state: "exited", code: null });
   } finally {
+    vi.unstubAllEnvs();
     if (previous === undefined) delete process.env.PI_SUBAGENTS_STATE_DIR;
     else process.env.PI_SUBAGENTS_STATE_DIR = previous;
     await rm(root, { recursive: true, force: true });
@@ -209,6 +221,7 @@ it("a background launch refused before it queues returns the refusal", async () 
     await privateDirectory(join(root, "runs", run.id));
     await writeRun(run);
     await writeFile(join(root, "limits.json"), JSON.stringify({ active: 0 }));
+    await localLaunchTools(root);
     const started = startBackground(run, "unused-entry", new RexEvents(), undefined, () => {}, {});
     started.done.catch(() => undefined);
     const outcome = await Promise.race([
@@ -220,8 +233,27 @@ it("a background launch refused before it queues returns the refusal", async () 
     ]);
     expect(outcome).toMatch(/Invalid admission limits/);
   } finally {
+    vi.unstubAllEnvs();
     if (previous === undefined) delete process.env.PI_SUBAGENTS_STATE_DIR;
     else process.env.PI_SUBAGENTS_STATE_DIR = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("a launch that fails before asking Rex for a tab holds no reservation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pirs-prelaunch-"));
+  vi.stubEnv("PI_SUBAGENTS_STATE_DIR", root);
+  vi.stubEnv("PI_SUBAGENTS_REX", join(root, "missing-rex"));
+  try {
+    const run = record(root);
+    await privateDirectory(join(root, "runs", run.id));
+    await writeRun(run);
+    await expect(
+      runForeground(run, "unused-entry", new RexEvents(), undefined, () => {}),
+    ).rejects.toThrow();
+    expect((await readReservations()).flatMap((r) => r.members)).toEqual([]);
+  } finally {
+    vi.unstubAllEnvs();
     await rm(root, { recursive: true, force: true });
   }
 });
