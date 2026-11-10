@@ -342,7 +342,6 @@ export async function admit(
 
 export async function writerOnPath(target: string, memberId?: string): Promise<RunRecord | null> {
   return withAdmissionLock(async () => {
-    await readLimits();
     const reservations = (await collect()).reservations;
     if (memberId) {
       const own = await readRun(memberId);
