@@ -443,8 +443,7 @@ it("a resumed launch that may have asked Rex before a crash never claims an exit
       const resumed = runForeground(run, "unused-entry", new RexEvents(), undefined, () => {}, {
         resume: true,
       });
-      if (ending === "failed") await expect(resumed).rejects.toThrow();
-      else await resumed;
+      await resumed;
       expect(await readRun(run.id)).toMatchObject({
         lifecycle: ending,
         process: { state: "unknown" },
@@ -453,6 +452,38 @@ it("a resumed launch that may have asked Rex before a crash never claims an exit
       vi.unstubAllEnvs();
       await rm(root, { recursive: true, force: true });
     }
+  }
+});
+
+it("a resumed launch that may already have asked Rex never asks again", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pirs-no-retry-"));
+  vi.stubEnv("PI_SUBAGENTS_STATE_DIR", root);
+  try {
+    const log = join(root, "rex.log");
+    const rex = join(root, "rex");
+    await writeFile(
+      rex,
+      `#!/bin/sh\necho "$1 $2" >> '${log}'\nprintf '%s\\n' '{"endpoint":"unix:///rex.sock"}'\n`,
+      { mode: 0o700 },
+    );
+    vi.stubEnv("PI_SUBAGENTS_REX", rex);
+    vi.stubEnv("PI_SUBAGENTS_PI", process.execPath);
+    const run = { ...record(root), background: true };
+    await privateDirectory(join(root, "runs", run.id));
+    transition(run, "starting");
+    await writeRun(run);
+    // The parent asked Rex for a tab, then crashed before saving the reply.
+    await writeFile(join(root, "runs", run.id, "rex-launch"), "");
+    const resumed = await runForeground(run, "unused-entry", new RexEvents(), undefined, () => {}, {
+      resume: true,
+    });
+    const calls = (await readFile(log, "utf8").catch(() => "")).split("\n").filter(Boolean);
+    expect(calls.filter((call) => call === "window new")).toEqual([]);
+    expect(resumed.run).toMatchObject({ lifecycle: "failed", process: { state: "unknown" } });
+    expect(resumed.run.diagnostic).toMatch(/Not retried/);
+  } finally {
+    vi.unstubAllEnvs();
+    await rm(root, { recursive: true, force: true });
   }
 });
 

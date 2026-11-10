@@ -530,6 +530,13 @@ async function watch(
   if (options.resume && run.lifecycle === "failed" && !run.rex) return { run };
   let before: Fingerprint | undefined;
   const launched = options.resume && run.rex && run.lifecycle !== "admitting";
+  if (!launched && options.resume && (await mayHaveAskedRex(run))) {
+    // The launcher asked Rex and its reply was never saved, so a child may be running.
+    run.diagnostic = `Uncertain Rex launch: asked before a reload or crash, reply not saved. Not retried; the reservation stays until Rex shows the tab or a person clears it. Events: ${run.paths.events}`;
+    transition(run, (await readClaim(run.paths.claim)) === "cancelled" ? "cancelled" : "failed");
+    await writeRun(run);
+    return { run };
+  }
   if (!launched) {
     // Anything that can fail without launching runs before admission, so it can't strand a
     // reservation that no process will ever release.
