@@ -274,6 +274,7 @@ export async function writeRun(run: RunRecord): Promise<void> {
       persisted.queue = null;
     }
     if (saved?.process.state === "exited") persisted.process = saved.process;
+    else recordProcess(persisted, persisted.process);
     await atomicWrite(run.paths.run, parse(RunRecord, persisted));
   });
 }

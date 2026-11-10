@@ -328,6 +328,31 @@ esac
   }
 });
 
+it("a stale write keeps an ended run's live process unresolved", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pirs-stale-live-"));
+  vi.stubEnv("PI_SUBAGENTS_STATE_DIR", root);
+  try {
+    const run = record(root);
+    await privateDirectory(join(root, "runs", run.id));
+    transition(run, "starting");
+    transition(run, "running");
+    run.process = { state: "live", pid: 4242 };
+    await writeRun(run);
+    const canceller = await readRun(run.id);
+    const watcher = await readRun(run.id);
+    transition(canceller, "cancelled");
+    await writeRun(canceller);
+    await writeRun(watcher);
+    expect(await readRun(run.id)).toMatchObject({
+      lifecycle: "cancelled",
+      process: { state: "unresolved", pid: 4242 },
+    });
+  } finally {
+    vi.unstubAllEnvs();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 it("repairs permissions on a pre-existing state directory", async () => {
   const root = await mkdtemp(join(tmpdir(), "pirs-permissions-"));
   try {
