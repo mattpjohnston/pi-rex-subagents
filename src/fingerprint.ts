@@ -187,13 +187,16 @@ function parseShowRef(text: string): Record<string, string> {
   return refs;
 }
 
+/** A conflicted path has one entry per stage; all of them are kept, in Git's stage order. */
 function parseStage(text: string): Record<string, string> {
   const stage: Record<string, string> = {};
   for (const record of text.split("\0")) {
     if (!record) continue;
     const tab = record.indexOf("\t");
     if (tab < 0) continue;
-    stage[record.slice(tab + 1)] = record.slice(0, tab);
+    const path = record.slice(tab + 1);
+    const entry = record.slice(0, tab);
+    stage[path] = stage[path] === undefined ? entry : `${stage[path]}\n${entry}`;
   }
   return stage;
 }

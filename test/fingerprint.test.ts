@@ -139,3 +139,31 @@ it("sees a linked worktree config and the common config as separate paths", asyn
     changed.paths.some((path) => path.includes("common-config") || path.endsWith("config")),
   ).toBe(true);
 });
+
+it("sees a change to one stage of a conflicted path", async () => {
+  const root = await gitRepo();
+  const git = (...args: string[]) =>
+    execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
+  git("checkout", "-qb", "theirs");
+  await writeFile(join(root, "f"), "theirs\n");
+  git("commit", "-qam", "theirs");
+  git("checkout", "-q", "-");
+  await writeFile(join(root, "f"), "ours\n");
+  git("commit", "-qam", "ours");
+  try {
+    git("merge", "-q", "theirs");
+  } catch {
+    // The conflict is the point: the index now holds stages 1, 2 and 3 for f.
+  }
+  const before = ok(await captureFingerprint(root));
+  const other = execFileSync("git", ["-C", root, "hash-object", "-w", "--stdin"], {
+    input: "another base\n",
+    encoding: "utf8",
+  }).trim();
+  execFileSync("git", ["-C", root, "update-index", "--index-info"], {
+    input: `100644 ${other} 1\tf\n`,
+  });
+  expect(git("ls-files", "--stage", "f").split("\n")).toHaveLength(3);
+  const after = ok(await captureFingerprint(root));
+  expect(compareFingerprints(before, after)).toMatchObject({ state: "changed", paths: ["f"] });
+});
