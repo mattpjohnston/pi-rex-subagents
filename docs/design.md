@@ -44,6 +44,8 @@ Each run has a private directory, `runs/<run-id>/`, in the state directory:
 
 A run goes from `admitting` to `starting` to `running`, then ends `completed`, `failed`, `aborted`, `incomplete`, `taken_over`, or `cancelled`. Process state is tracked separately as `live`, `exited`, `unresolved` (still alive after its shutdown grace), or `unknown` (Rex unreachable). A finished answer doesn't mean the process has exited.
 
+`src/records.ts` holds the rules every writer shares. An ended run is never waiting or queued. A process still alive after its run ended is `unresolved`, except after a takeover, where a person is using it. Several processes write the same record from their own copy (the launcher, a canceller, the parent's refresh), so the first ending and a confirmed exit are kept on disk, whatever an older copy says.
+
 ### Deleting old runs
 
 Each run directory holds a full Pi session, so old runs are deleted. Once per parent process start, the parent deletes a run that finished more than `keepRunsFor` days ago (30 by default, `false` to keep everything). It runs in the background, never in the 2-second refresh, and subagents don't run it.
@@ -88,7 +90,7 @@ Each rule has a test that plants a command in a real repository and checks it do
 
 `inspect` is the normal setup with `--exclude-tools edit,write`, checked at every session start. It keeps the shell, MCP, and extensions, and counts as a reader. Before launch and after exit, the parent records the repository's state:
 
-- In a Git repository: HEAD, every ref, the staged entries and index flags, the repository's config, hooks, and `info/` files, and a hash of every file under the root, including untracked and ignored files.
+- In a Git repository: HEAD, every ref, the staged entries (every stage of a conflicted path) and index flags, the repository's config, hooks, and `info/` files, and a hash of every file under the root, including untracked and ignored files.
 - Anywhere else: a hash of every file under the directory.
 
 The result says `clean`, `changed` with the changed paths, or `unknown` if the size or time limit ran out. This never changes whether the run succeeded. The hashes are of file contents because HEAD plus `git status` misses writes to ignored files, `skip-worktree` edits, and new refs. They can't see writes outside the repository or changes undone before the subagent exits.
@@ -113,7 +115,9 @@ Waiting launches go in order, so a newer reader never jumps an older waiting wri
 
 The `active` cap counts running subagents across every parent, including ones you've taken over. Per-provider caps work the same way. There is no separate cap on writers, since the repository rule already keeps them apart.
 
-A subagent's reservation ends when Rex confirms its process exited. If Rex can't be reached, the reservation stays. A taken-over subagent keeps its reservation until its process exits.
+A subagent's reservation ends when Rex confirms its process exited. If Rex can't be reached, the reservation stays. A taken-over subagent keeps its reservation until its process exits. Rex is asked about members before the admission lock is taken, because a Rex call can take seconds and every lock user would wait. Exit is final, so a member seen exited is still exited when it's dropped under the lock.
+
+Anything that can fail without starting a process, such as finding `pi` or checking that Rex is local, is checked before admission. A launch that fails before Rex is asked for a tab gives up its ticket and is recorded as never having had a process. After that, only Rex can prove the process exited.
 
 While a `write` subagent holds a repository, the parent's own `edit` and `write` calls inside it are refused, including an edit in the same message as the launch. `bash` is never refused, because there's no way to know what a command will touch. The same goes for an `edit` or `write` tool from another extension that doesn't take a single `path`. This keeps cooperating tools apart. It isn't a lock.
 
@@ -139,7 +143,7 @@ Cancelling a run also cancels the runs below it, except ones you've taken over a
 
 ## Background results
 
-A background launch returns its run ID once the run is admitted or queued. Its outcome is ready once its claim exists and its process has exited, or once its shutdown grace has passed with the process still alive. A takeover is ready at once, so the parent hears about it without waiting for your session to end. What's ready is worked out from the run records and the parent's session file, not kept in memory.
+A background launch returns its run ID once the run is admitted or queued. A launch refused before that, for a wait cycle or an invalid `limits.json`, returns the refusal as the call's error. Its outcome is ready once its claim exists and its process has exited, or once its shutdown grace has passed with the process still alive. A takeover is ready at once, so the parent hears about it without waiting for your session to end. What's ready is worked out from the run records and the parent's session file, not kept in memory.
 
 Results are batched. While the parent is busy, nothing is sent. When it finishes its turn, every ready result goes in one message. When it's idle, the extension waits 3 seconds for others finishing around the same time. Each batch is one `subagent-results` message listing its run IDs, capped at 50 KB or 2,000 lines in total. Results that don't fit are listed by run ID, outcome, and result path.
 
@@ -162,7 +166,7 @@ No session change cancels a subagent you've taken over.
 
 A message is a file, `inbox/<id>.json`, holding the ID, run ID, text, sender (the parent's Pi session ID), and time. Its answer is a second file, `<id>.ack.json`, which says `accepted` (with when it was sent to the model, once it is), `consumed`, or `refused` (with the claim that caused it).
 
-The subagent checks its inbox every 250 ms. It accepts a message only if the run hasn't ended, checked under the run lock, so a message can't slip in as the run finishes. It sends an accepted message with `pi.sendUserMessage`, as steering while the model is working or as a new prompt while it's idle, with the message ID in the text. It never types into the terminal, which could answer an open dialog. A message counts as consumed once its ID appears in a saved user message. Pi emits `message_end` before saving the message, so the check happens afterwards.
+The subagent checks its inbox every 250 ms. A check that finds nothing to accept, send, or confirm takes no lock. It accepts a message only if the run hasn't ended, checked under the run lock, so a message can't slip in as the run finishes. It sends an accepted message with `pi.sendUserMessage`, as steering while the model is working or as a new prompt while it's idle, with the message ID in the text. It never types into the terminal, which could answer an open dialog. A message counts as consumed once its ID appears in a saved user message. Pi emits `message_end` before saving the message, so the check happens afterwards.
 
 The parent waits up to 10 seconds for an answer and reports `accepted`, `refused`, or `unacknowledged`. A message file on its own never counts as delivered. If you take over a subagent, the parent's `taken_over` result lists messages it had accepted but not yet read.
 
