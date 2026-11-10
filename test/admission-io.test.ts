@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { expect, it } from "vitest";
 import { canonicalTarget, checkoutRoot } from "../src/checkout.ts";
 import { contains, overlaps } from "../src/admission-core.ts";
-import { admit, readLimits } from "../src/admission.ts";
+import { admit, readLimits, tryWake, writerOnPath } from "../src/admission.ts";
 import { privateDirectory, runPaths, writeRun, type RunRecord } from "../src/records.ts";
 import { recoverStaleLock, withLock } from "../src/locks.ts";
 
@@ -193,4 +193,78 @@ it("admission writes no measurement file, whatever the environment says", async 
     process.env = previous;
     await rm(root, { recursive: true, force: true });
   }
+});
+
+it("admission never holds its lock while asking Rex about members", async () => {
+  await scratch(async (dir) => {
+    const log = join(dir, "rex.log");
+    const rex = join(dir, "rex");
+    await writeFile(
+      rex,
+      `#!/bin/sh
+if [ -d '${join(dir, "lock")}' ]; then echo locked >> '${log}'; else echo free >> '${log}'; fi
+case "$1 $2" in
+  'block inspect') printf '%s\\n' '{"session_id":"s","block":{"window_id":"w"}}' ;;
+  'block call') printf '%s\\n' '{"last_exit":null,"child":{"pid":4242}}' ;;
+  *) exit 1 ;;
+esac
+`,
+      { mode: 0o700 },
+    );
+    const previousRex = process.env.PI_SUBAGENTS_REX;
+    process.env.PI_SUBAGENTS_REX = rex;
+    try {
+      const make = async (id: string, access: RunRecord["access"]): Promise<RunRecord> => {
+        const runDir = join(dir, "runs", id);
+        await privateDirectory(runDir);
+        const settings = { provider: "p", model: "test", thinking: "off" as const };
+        const run: RunRecord = {
+          version: 1,
+          id,
+          label: id.slice(0, 4),
+          taskPath: join(runDir, "task.md"),
+          cwd: dir,
+          checkoutRoot: dir,
+          access,
+          requested: settings,
+          effective: settings,
+          background: false,
+          continueFrom: null,
+          parentSessionId: "parent",
+          parentRunId: null,
+          depth: 1,
+          activity: { parked: "settled", readyToWake: true, tools: [], foreground: [] },
+          rex: null,
+          location: null,
+          paths: runPaths(runDir),
+          lifecycle: "admitting",
+          process: { state: "unknown" },
+          waiting: null,
+          queue: null,
+          sessionFile: null,
+          diagnostic: null,
+          createdAt: 0,
+          updatedAt: 0,
+          loadedAt: null,
+          finishedAt: null,
+        };
+        await writeRun(run);
+        return run;
+      };
+      const member = await make("d".repeat(24), "read");
+      expect(await admit(member)).toBe(true);
+      member.rex = { sessionId: "s", windowId: "w", blockId: "b" };
+      await writeRun(member);
+      await writeFile(log, "");
+      await writerOnPath(join(dir, "file.txt"));
+      await tryWake(member.id);
+      expect(await admit(await make("e".repeat(24), "read"))).toBe(true);
+      const calls = (await readFile(log, "utf8")).split("\n").filter(Boolean);
+      expect(calls.length).toBeGreaterThan(0);
+      expect(calls.filter((state) => state === "locked")).toEqual([]);
+    } finally {
+      if (previousRex === undefined) delete process.env.PI_SUBAGENTS_REX;
+      else process.env.PI_SUBAGENTS_REX = previousRex;
+    }
+  });
 });

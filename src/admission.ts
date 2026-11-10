@@ -101,10 +101,19 @@ async function files(directory: string): Promise<string[]> {
     throw error;
   }
 }
+/** A reservation removed between listing and reading is skipped, so this is safe without the lock. */
 export async function readReservations(): Promise<Reservation[]> {
-  return Promise.all(
-    (await files("reservations")).map(async (path) => parse(Reservation, await readJson(path))),
+  const read = await Promise.all(
+    (await files("reservations")).map(async (path) => {
+      try {
+        return parse(Reservation, await readJson(path));
+      } catch (error) {
+        if (isMissing(error)) return null;
+        throw error;
+      }
+    }),
   );
+  return read.filter((reservation) => reservation !== null);
 }
 async function readTickets(): Promise<Ticket[]> {
   return Promise.all(
@@ -138,25 +147,38 @@ export async function updateMemberProvider(runId: string, provider: string): Pro
     }
   });
 }
-/** Called only under admission lock. Unknown launch/liveness never frees a reservation. */
-async function collect(): Promise<{ reservations: Reservation[] }> {
+/**
+ * Members whose exit Rex confirms. Asked without the admission lock, because each Rex call can
+ * take seconds and every lock user would wait. Exit is final, so a member seen exited here is
+ * still exited when collect drops it. Unknown liveness never counts as exited.
+ */
+async function exitedMembers(): Promise<ReadonlySet<string>> {
+  const exited = new Set<string>();
+  for (const reservation of await readReservations())
+    for (const member of reservation.members) {
+      const record = await readRun(member.runId).catch((error: unknown) => {
+        if (isMissing(error)) return null;
+        throw error;
+      });
+      if (!record) continue;
+      const gone = record.rex
+        ? (await observeProcess(record.location ?? record.rex)).process.state === "exited"
+        : record.process.state === "exited";
+      if (gone) exited.add(member.runId);
+    }
+  return exited;
+}
+/** Caller holds admission. Drops members already confirmed exited; a reservation ends with its last. */
+async function collect(exited: ReadonlySet<string>): Promise<Reservation[]> {
   const reservations = await readReservations();
   for (const reservation of reservations) {
-    const kept = [];
-    for (const member of reservation.members) {
-      const record = await readRun(member.runId);
-      let exited = record.process.state === "exited";
-      if (record.rex)
-        exited = (await observeProcess(record.location ?? record.rex)).process.state === "exited";
-      if (!exited) kept.push(member);
-    }
+    const kept = reservation.members.filter((member) => !exited.has(member.runId));
+    if (kept.length === reservation.members.length) continue;
     reservation.members = kept;
     if (kept.length) await atomicWrite(pathForReservation(reservation.id), reservation);
     else await unlink(pathForReservation(reservation.id));
   }
-  return {
-    reservations: reservations.filter((reservation) => reservation.members.length),
-  };
+  return reservations.filter((reservation) => reservation.members.length);
 }
 /** Called under admission. Keep exited ancestry in the graph even after membership ends. */
 export async function admissionSnapshot(
@@ -235,8 +257,11 @@ export async function claimedAncestor(run: RunRecord): Promise<string | null> {
   }
   return null;
 }
-async function pass(limits: Limits): Promise<{ snapshot: Snapshot; reservations: Reservation[] }> {
-  const { reservations } = await collect();
+async function pass(
+  limits: Limits,
+  exited: ReadonlySet<string>,
+): Promise<{ snapshot: Snapshot; reservations: Reservation[] }> {
+  const reservations = await collect(exited);
   const snapshot = await admissionSnapshot(limits, reservations);
   const runs = snapshot.runs;
   const admitted = decide(snapshot).admit;
@@ -296,6 +321,7 @@ export async function admit(
     }
   });
   while (true) {
+    const exited = await exitedMembers();
     const outcome = await withAdmissionLock(async () => {
       const limits = await readLimits();
       if (signal?.aborted || (await readClaim(run.paths.claim)) || (await claimedAncestor(run))) {
@@ -307,7 +333,7 @@ export async function admit(
         return "cancelled" as const;
       }
       if (pause?.aborted) return "paused" as const;
-      const { snapshot, reservations } = await pass(limits);
+      const { snapshot, reservations } = await pass(limits, exited);
       if (reservations.some((r) => r.members.some((m) => m.runId === run.id))) {
         if (run.queue) {
           run.queue = null;
@@ -335,8 +361,9 @@ export async function admit(
 }
 
 export async function writerOnPath(target: string, memberId?: string): Promise<RunRecord | null> {
+  const exited = await exitedMembers();
   return withAdmissionLock(async () => {
-    const reservations = (await collect()).reservations;
+    const reservations = await collect(exited);
     if (memberId) {
       const own = await readRun(memberId);
       const reservation = reservations.find((r) => r.members.some((m) => m.runId === memberId));
@@ -390,16 +417,18 @@ export async function wake(id: string, callId?: string): Promise<void> {
   }
 }
 
+async function waking(id: string): Promise<boolean> {
+  const run = await readRun(id);
+  return Boolean(
+    run.activity?.parked && !run.activity.foreground.length && !(await readClaim(run.paths.claim)),
+  );
+}
 export async function tryWake(id: string): Promise<boolean> {
+  if (!(await withAdmissionLock(() => waking(id)))) return true;
+  const exited = await exitedMembers();
   return withAdmissionLock(async () => {
-    const run = await readRun(id);
-    if (
-      !run.activity?.parked ||
-      run.activity.foreground.length ||
-      (await readClaim(run.paths.claim))
-    )
-      return true;
-    const snapshot = await admissionSnapshot(await readLimits(), (await collect()).reservations);
+    if (!(await waking(id))) return true;
+    const snapshot = await admissionSnapshot(await readLimits(), await collect(exited));
     if (!decide(snapshot).wakes.find((r) => r.id === id)?.hasSlot) return false;
     await updateActivity(id, (activity) => {
       activity.parked = null;
