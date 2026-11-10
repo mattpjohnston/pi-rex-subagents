@@ -47,6 +47,9 @@ export async function cancelControlled(
         : "Cancellation claimed before signalling; exit confirmation remains in the run record",
   };
 }
+/** Runs waiting for a human come first, then the oldest. */
+export const waitingFirst = (a: RunRecord, b: RunRecord) =>
+  Number(Boolean(b.waiting)) - Number(Boolean(a.waiting)) || a.createdAt - b.createdAt;
 export function treeOrder(runs: readonly RunRecord[]): RunRecord[] {
   const ordered: RunRecord[] = [];
   const visit = (parent: string | null) => {
@@ -56,10 +59,7 @@ export function treeOrder(runs: readonly RunRecord[]): RunRecord[] {
           ? !r.parentRunId || !runs.some((p) => p.id === r.parentRunId)
           : r.parentRunId === parent,
       )
-      .sort(
-        (a, b) =>
-          Number(Boolean(b.waiting)) - Number(Boolean(a.waiting)) || a.createdAt - b.createdAt,
-      );
+      .sort(waitingFirst);
     for (const child of children) {
       ordered.push(child);
       visit(child.id);

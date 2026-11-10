@@ -10,7 +10,7 @@ import {
 import { contains } from "./admission-core.ts";
 import { canLaunchChildren, park, readLimits, wake, writerOnPath } from "./admission.ts";
 import { canonicalTarget, checkoutRoot } from "./checkout.ts";
-import { ownedRuns, registerControl, treeOrder } from "./control.ts";
+import { ownedRuns, registerControl, treeOrder, waitingFirst } from "./control.ts";
 import { live, registerSubagentsCommand, statusLine } from "./commands.ts";
 import { readClaim } from "./claims.ts";
 import {
@@ -62,8 +62,6 @@ type TabView = NonNullable<Awaited<ReturnType<typeof clearEligible>>>;
 
 const retentionStarted = Symbol.for("pi-rex-subagents.retention-started");
 const entry = fileURLToPath(import.meta.url);
-const waitingFirst = (a: RunRecord, b: RunRecord) =>
-  Number(Boolean(b.waiting)) - Number(Boolean(a.waiting)) || a.createdAt - b.createdAt;
 export function attentionText(run: RunRecord): string {
   return `${statusLine(run)}. Open /subagents go ${run.label}.${run.waiting?.kind === "project_trust" ? ' Pi’s "Trust parent folder" option can cover later worktrees under that root.' : ""}`;
 }

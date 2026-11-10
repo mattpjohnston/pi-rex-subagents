@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { cancelControlled, ownedRuns, treeOrder } from "./control.ts";
+import { CONTROL_LIST_LIMIT, cancelControlled, ownedRuns, treeOrder } from "./control.ts";
 import { shouldAppend, type TransitionView } from "./delivery.ts";
 import { isTerminal, listRuns, type RunRecord } from "./records.ts";
 import { locate, object, rexJson } from "./rex.ts";
@@ -145,7 +145,7 @@ export function registerSubagentsCommand(
         return;
       }
       const selected = args === "all" ? all.filter(live) : owned;
-      for (const run of selected.slice(0, 30)) {
+      for (const run of selected.slice(0, CONTROL_LIST_LIMIT)) {
         if (run.rex && run.tabClosedAt === undefined)
           run.location = await locate(run.rex.blockId, run.location ?? run.rex);
       }
@@ -155,7 +155,7 @@ export function registerSubagentsCommand(
       const text = cappedText(
         [
           selected
-            .slice(0, 30)
+            .slice(0, CONTROL_LIST_LIMIT)
             .map((run) =>
               [
                 statusLine(run),
