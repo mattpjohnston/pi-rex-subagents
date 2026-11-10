@@ -163,6 +163,10 @@ export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
     if (packed.runIds.length) log("descendants_sent", { ids: packed.runIds, mode });
   };
   const drain = async (ctx: ExtensionContext) => {
+    // Only a message still to accept, send, or see consumed needs the lock. Messages and their
+    // answers are written atomically, so reading them first is safe.
+    const settled = (entry: InboxEntry) => ["consumed", "refused"].includes(messageState(entry));
+    if ((await inboxEntries(run)).every(settled)) return;
     await withProtocolLock(run.paths.lock, async () => {
       const entries = await inboxEntries(run);
       await consume(ctx, entries);
