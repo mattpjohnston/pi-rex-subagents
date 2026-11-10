@@ -158,7 +158,7 @@ async function bootstrapGit(
  * as Git discovers them. stat calls cost no Git process, and a repository created or cloned
  * inside a directory already read gets its own entry.
  */
-async function repositoryKey(cwd: string): Promise<string> {
+async function repositoryKey(cwd: string): Promise<string | null> {
   const exists = async (path: string) => {
     try {
       await lstat(path);
@@ -177,16 +177,17 @@ async function repositoryKey(cwd: string): Promise<string> {
       );
       if (bare.every(Boolean)) return dir;
       const parent = dirname(dir);
-      if (parent === dir) return cwd;
+      if (parent === dir) return null;
       dir = parent;
     }
   } catch {
-    return cwd;
+    return null;
   }
 }
 async function emptyTreeId(cwd: string): Promise<string> {
+  // Outside a repository nothing is cached, so a repository created there later gets its own ID.
   const key = await repositoryKey(cwd);
-  const cached = emptyTrees.get(key);
+  const cached = key === null ? undefined : emptyTrees.get(key);
   if (cached) return cached;
   const hashed = await bootstrapGit(cwd, [
     "hash-object",
@@ -197,7 +198,7 @@ async function emptyTreeId(cwd: string): Promise<string> {
   ]);
   if (hashed.code !== 0) throw new Error(hashed.stderr.trim() || "Cannot hash the empty tree");
   const id = hashed.stdout.trim();
-  emptyTrees.set(key, id);
+  if (key !== null) emptyTrees.set(key, id);
   return id;
 }
 

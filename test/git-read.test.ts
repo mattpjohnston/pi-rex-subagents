@@ -338,3 +338,20 @@ it("reads a bare SHA-256 repository nested inside a SHA-1 working tree", async (
     await rm(outer, { recursive: true, force: true });
   }
 });
+
+it("reads a SHA-256 repository created in a directory read before it was one", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pirs-git-late-"));
+  try {
+    const git = (...args: string[]) =>
+      execFileSync("git", ["-C", dir, "-c", "user.name=a", "-c", "user.email=a@b", ...args]);
+    await runHardenedGit(dir, ["status"]);
+    git("init", "-q", "--object-format=sha256");
+    await writeFile(join(dir, "y"), "1\n");
+    git("add", ".");
+    git("commit", "-qm", "late");
+    const show = await runHardenedGit(dir, ["show", "HEAD"]);
+    expect([show.code, show.stderr.trim()]).toEqual([0, ""]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
