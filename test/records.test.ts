@@ -1,5 +1,5 @@
 import { progressUpdate } from "../src/index.ts";
-import { observeRexEvent, runForeground, startBackground } from "../src/launch.ts";
+import { observeRexEvent, reconcile, runForeground, startBackground } from "../src/launch.ts";
 import { RexEvents } from "../src/rex.ts";
 import { chmod, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -286,6 +286,42 @@ it("a queued launch that fails gives up its place in the queue", async () => {
     await expect(started.done).rejects.toThrow(/Invalid admission limits/);
     expect(await readdir(join(root, "queue"))).toEqual([]);
     expect((await readRun(run.id)).lifecycle).toBe("failed");
+  } finally {
+    vi.unstubAllEnvs();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("an ended run whose process Rex later finds alive is unresolved, unless taken over", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pirs-unresolved-"));
+  const rex = join(root, "rex");
+  await writeFile(
+    rex,
+    `#!/bin/sh
+case "$1 $2" in
+  'block inspect') printf '%s\\n' '{"session_id":"s","block":{"window_id":"w"}}' ;;
+  'block call') printf '%s\\n' '{"last_exit":null,"child":{"pid":4242}}' ;;
+  *) exit 1 ;;
+esac
+`,
+    { mode: 0o700 },
+  );
+  vi.stubEnv("PI_SUBAGENTS_REX", rex);
+  try {
+    for (const [outcome, expected] of [
+      ["completed", "unresolved"],
+      ["cancelled", "unresolved"],
+      ["taken_over", "live"],
+    ] as const) {
+      const run = record(root);
+      run.rex = { sessionId: "s", windowId: "w", blockId: "b" };
+      transition(run, "starting");
+      transition(run, outcome);
+      // Rex was unreachable when the shutdown grace ended.
+      run.process = { state: "unknown" };
+      await reconcile(run);
+      expect([outcome, run.process]).toEqual([outcome, { state: expected, pid: 4242 }]);
+    }
   } finally {
     vi.unstubAllEnvs();
     await rm(root, { recursive: true, force: true });

@@ -300,7 +300,7 @@ export async function readResult(run: RunRecord): Promise<ResultFile> {
 export function isTerminal(state: Lifecycle): state is Outcome {
   return !["admitting", "starting", "running"].includes(state);
 }
-/** An ended run is never waiting for a human or queued, whoever ends it. */
+/** An ended run is never waiting for a human or queued, whoever ends it, and its process is settled. */
 export function transition(run: RunRecord, next: Lifecycle): void {
   if (run.lifecycle !== next) {
     const allowed =
@@ -318,7 +318,16 @@ export function transition(run: RunRecord, next: Lifecycle): void {
   if (isTerminal(next)) {
     run.waiting = null;
     run.queue = null;
+    recordProcess(run, run.process);
   }
+}
+/** A process still alive after its run ended is unresolved, unless a human took the run over. */
+export function recordProcess(run: RunRecord, observed: ProcessObservation): void {
+  const overdue =
+    run.process.state === "unresolved" ||
+    (isTerminal(run.lifecycle) && run.lifecycle !== "taken_over");
+  run.process =
+    observed.state === "live" && overdue ? { state: "unresolved", pid: observed.pid } : observed;
 }
 export async function listRuns(): Promise<RunRecord[]> {
   let ids: string[];

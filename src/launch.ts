@@ -19,6 +19,7 @@ import {
   runPaths,
   stateDir,
   isTerminal,
+  recordProcess,
   transition,
   writeRun,
   type CheckoutReport,
@@ -211,10 +212,7 @@ export async function reconcile(run: RunRecord): Promise<void> {
   if (!run.rex) return;
   const observation = await observeProcess(run.location ?? run.rex);
   run.location = observation.location;
-  run.process =
-    run.process.state === "unresolved" && observation.process.state === "live"
-      ? { state: "unresolved", pid: observation.process.pid }
-      : observation.process;
+  recordProcess(run, observation.process);
 }
 
 /** Claim before signalling. A result winner may be closed, but never rewritten. */
@@ -261,15 +259,12 @@ export async function cancel(
           await delay(200);
         } while (Date.now() < deadline);
         const fresh = await readRun(child.id);
-        fresh.process =
-          child.process.state === "live"
-            ? { state: "unresolved", pid: child.process.pid }
-            : child.process;
         if (!isTerminal(fresh.lifecycle)) {
           const winner = await readClaim(fresh.paths.claim);
           const result = winner === "result" ? await readResult(fresh).catch(() => null) : null;
           transition(fresh, winner === "result" ? (result?.outcome ?? "failed") : "cancelled");
         }
+        recordProcess(fresh, child.process);
         await writeRun(fresh);
       }),
   );
@@ -686,8 +681,6 @@ async function watch(
       if (winner === "cancelled" && !cancelDeadline) cancelDeadline = Date.now() + CANCELLATION_MS;
       const graceEnded = cancelDeadline ?? resultDeadline;
       if ((winner && run.process.state === "exited") || (graceEnded && Date.now() >= graceEnded)) {
-        if (run.process.state === "live")
-          run.process = { state: "unresolved", pid: run.process.pid };
         transition(
           run,
           winner === "cancelled"
@@ -711,8 +704,6 @@ async function watch(
           await delay(250);
           await reconcile(run);
         }
-        if (run.process.state === "live")
-          run.process = { state: "unresolved", pid: run.process.pid };
         transition(run, "failed");
         break;
       }

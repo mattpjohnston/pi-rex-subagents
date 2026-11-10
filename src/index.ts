@@ -39,6 +39,7 @@ import {
   listRuns,
   parse,
   readRun,
+  recordProcess,
   runDirectory,
   transition,
   writeRun,
@@ -331,8 +332,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       if ((await readClaim(run.paths.claim)) === "taken_over") continue;
       const fresh = await readRun(run.id);
       if (fresh.process.state !== "live") continue;
-      fresh.process = { state: "unresolved", pid: fresh.process.pid };
-      if (!isTerminal(fresh.lifecycle)) transition(fresh, "cancelled");
+      if (isTerminal(fresh.lifecycle)) recordProcess(fresh, fresh.process);
+      else transition(fresh, "cancelled");
       await writeRun(fresh);
     }
   };
