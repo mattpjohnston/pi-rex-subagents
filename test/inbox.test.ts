@@ -76,7 +76,6 @@ it("orders the settlement table: claims, unsent, sent, then publication", () => 
     lock: null,
     child: "settling",
     messages: [],
-    piQueue: [],
   };
   expect(settlementDecision(s)).toBe("publish");
   expect(settlementDecision({ ...s, messages: ["sent"] })).toBe("wait");

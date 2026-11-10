@@ -7,7 +7,6 @@ export interface ProtocolSnapshot {
   lock: "parent" | null;
   child: "working" | "settling" | "idle" | "shutdown" | "exiting" | "human" | "exited";
   messages: readonly MessageState[];
-  piQueue: readonly number[];
   descendants?: { pending: boolean; live: boolean };
 }
 export type InboxAction = "steer" | "prompt" | "defer" | "refuse" | "none";

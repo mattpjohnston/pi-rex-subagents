@@ -10,8 +10,6 @@ export const FINGERPRINT_MAX_BYTES = 2 * 1024 * 1024 * 1024;
 export const FINGERPRINT_MAX_MS = 60_000;
 export const CHECKOUT_PATH_CAP = 50;
 
-export type { CheckoutReport };
-
 export interface FingerprintOk {
   version: 1;
   state: "ok";
@@ -50,12 +48,10 @@ function envLimit(name: string, fallback: number): number {
 
 class Budget {
   readonly started = Date.now();
-  readonly maxBytes: number;
   readonly maxMs: number;
   bytesLeft: number;
   reason: string | null = null;
   constructor(maxBytes: number, maxMs: number) {
-    this.maxBytes = maxBytes;
     this.maxMs = maxMs;
     this.bytesLeft = maxBytes;
     if (maxMs === 0) this.reason = "fingerprint time budget exceeded";

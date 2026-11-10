@@ -195,7 +195,6 @@ it("extends the one-run settlement table in the specified descendant order", () 
     lock: null,
     child: "settling",
     messages: [],
-    piQueue: [],
   };
   expect(
     settlementDecision({ ...base, messages: ["sent"], descendants: { pending: true, live: true } }),

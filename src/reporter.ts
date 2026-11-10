@@ -77,7 +77,6 @@ export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
     lock: null,
     child: phase ?? (settling ? "settling" : ctx.isIdle() ? "idle" : "working"),
     messages: entries.map(messageState),
-    piQueue: [],
   });
   const consume = async (ctx: ExtensionContext, entries: InboxEntry[]) => {
     const userTexts = ctx.sessionManager.getBranch().flatMap((entry) => {
