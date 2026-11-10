@@ -10,7 +10,7 @@ import {
   writeRun,
   type RunRecord,
 } from "../../src/records.ts";
-import { events, result, until } from "../lib/phase-one.ts";
+import { events, maybeFile, result, until } from "../lib/phase-one.ts";
 import { assertNotRateLimited } from "../lib/phase-four.ts";
 import { repo, withRun, type Run } from "../lib/run.ts";
 
@@ -80,7 +80,9 @@ async function prove(run: Run, label: string, extra: string): Promise<void> {
     const logged = await events(record);
     const loads = logged.filter((event) => event.type === "child_loaded");
     const settlements = logged.filter((event) => event.type === "agent_settled");
-    if (!loads.length || !settlements.length) return null;
+    // The reporter logs agent_settled before it writes the result, 30-120 ms later.
+    if (!loads.length || !settlements.length || !(await maybeFile(record.paths.result)))
+      return null;
     assert.equal(loads.length, 1, `${label} loaded ${loads.length} times`);
     assert.equal(settlements.length, 1, `${label} settled ${settlements.length} times`);
     return logged;
