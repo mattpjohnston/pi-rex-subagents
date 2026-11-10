@@ -314,3 +314,27 @@ it("reads a SHA-256 repository created inside a directory it already read", asyn
     await rm(outer, { recursive: true, force: true });
   }
 });
+
+it("reads a bare SHA-256 repository nested inside a SHA-1 working tree", async () => {
+  const outer = await mkdtemp(join(tmpdir(), "pirs-git-bare-"));
+  try {
+    const git = (cwd: string, ...args: string[]) =>
+      execFileSync("git", ["-C", cwd, "-c", "user.name=a", "-c", "user.email=a@b", ...args]);
+    git(outer, "init", "-q");
+    await writeFile(join(outer, "x"), "1\n");
+    git(outer, "add", ".");
+    git(outer, "commit", "-qm", "outer");
+    const source = join(outer, "source");
+    await mkdir(source);
+    git(source, "init", "-q", "--object-format=sha256");
+    await writeFile(join(source, "y"), "1\n");
+    git(source, "add", ".");
+    git(source, "commit", "-qm", "nested");
+    git(outer, "clone", "-q", "--bare", source, join(outer, "cache.git"));
+    expect((await runHardenedGit(outer, ["show", "HEAD"])).code).toBe(0);
+    const bare = await runHardenedGit(join(outer, "cache.git"), ["show", "HEAD"]);
+    expect([bare.code, bare.stderr.trim()]).toEqual([0, ""]);
+  } finally {
+    await rm(outer, { recursive: true, force: true });
+  }
+});

@@ -153,22 +153,35 @@ async function bootstrapGit(
 }
 
 /**
- * The ID depends on the repository's hash format, so it is cached per repository, found as the
- * nearest .git above cwd with stat calls rather than a Git process. A repository created inside
- * a directory already read gets its own entry.
+ * The ID depends on the repository's hash format, so it is cached per repository: the nearest
+ * directory above cwd that has a .git entry or is itself a repository (HEAD, objects and refs),
+ * as Git discovers them. stat calls cost no Git process, and a repository created or cloned
+ * inside a directory already read gets its own entry.
  */
 async function repositoryKey(cwd: string): Promise<string> {
-  let dir = resolve(cwd);
-  while (true) {
+  const exists = async (path: string) => {
     try {
-      await lstat(join(dir, ".git"));
-      return dir;
+      await lstat(path);
+      return true;
     } catch (error) {
-      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) return cwd;
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
+      throw error;
     }
-    const parent = dirname(dir);
-    if (parent === dir) return cwd;
-    dir = parent;
+  };
+  let dir = resolve(cwd);
+  try {
+    while (true) {
+      if (await exists(join(dir, ".git"))) return dir;
+      const bare = await Promise.all(
+        ["HEAD", "objects", "refs"].map((name) => exists(join(dir, name))),
+      );
+      if (bare.every(Boolean)) return dir;
+      const parent = dirname(dir);
+      if (parent === dir) return cwd;
+      dir = parent;
+    }
+  } catch {
+    return cwd;
   }
 }
 async function emptyTreeId(cwd: string): Promise<string> {
