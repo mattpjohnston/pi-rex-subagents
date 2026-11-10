@@ -40,7 +40,7 @@ Each run has a private directory, `runs/<run-id>/`, in the state directory:
 - `run.json` is the run record: settings, repository root, access, Rex IDs, state, process state, and the parent's Pi session ID. The parent writes it before starting the subagent, and every read validates it.
 - `claim` records who decided how the run ended: `result`, `taken_over`, or `cancelled`.
 - `lock` is a directory held while anything writes the claim or accepts a message.
-- `result.json`, `task.md`, `events.jsonl` (what the subagent's side of the extension saw), `inbox/`, and `session/` (the subagent's full Pi session).
+- `rex-launch`, written just before Rex is asked for the tab, then `result.json`, `task.md`, `events.jsonl` (what the subagent's side of the extension saw), `inbox/`, and `session/` (the subagent's full Pi session).
 
 A run goes from `admitting` to `starting` to `running`, then ends `completed`, `failed`, `aborted`, `incomplete`, `taken_over`, or `cancelled`. Process state is tracked separately as `live`, `exited`, `unresolved` (still alive after its shutdown grace), or `unknown` (Rex unreachable). A finished answer doesn't mean the process has exited.
 
@@ -117,7 +117,7 @@ The `active` cap counts running subagents across every parent, including ones yo
 
 A subagent's reservation ends when Rex confirms its process exited. If Rex can't be reached, the reservation stays. A taken-over subagent keeps its reservation until its process exits. Rex is asked about members before the admission lock is taken, because a Rex call can take seconds and every lock user would wait. Exit is final, so a member seen exited is still exited when it's dropped under the lock.
 
-Anything that can fail without starting a process, such as finding `pi` or checking that Rex is local, is checked before admission. A launch that fails before Rex is asked for a tab gives up its ticket and is recorded as never having had a process. After that, only Rex can prove the process exited.
+Anything that can fail without starting a process, such as finding `pi` or checking that Rex is local, is checked before admission. A launch that fails before Rex is asked for a tab gives up its ticket and is recorded as never having had a process. The launcher writes and syncs `rex-launch` in the run directory just before it asks, so after a crash or reload the record still shows whether Rex may have been asked. Once it has, only Rex can prove the process exited.
 
 While a `write` subagent holds a repository, the parent's own `edit` and `write` calls inside it are refused, including an edit in the same message as the launch. `bash` is never refused, because there's no way to know what a command will touch. The same goes for an `edit` or `write` tool from another extension that doesn't take a single `path`. This keeps cooperating tools apart. It isn't a lock.
 

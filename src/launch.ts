@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { open, writeFile } from "node:fs/promises";
+import { open, stat, writeFile } from "node:fs/promises";
 import { dirname, delimiter, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { Type, type Static } from "typebox";
@@ -454,19 +454,31 @@ async function savedBefore(run: RunRecord): Promise<Fingerprint | undefined> {
   }
   return undefined;
 }
+/** Written and synced before Rex is asked for a tab, so its absence proves Rex never was. */
+const launchMarker = (run: RunRecord) => join(dirname(run.paths.run), "rex-launch");
+async function mayHaveAskedRex(run: RunRecord): Promise<boolean> {
+  if (run.rex !== null) return true;
+  try {
+    await stat(launchMarker(run));
+    return true;
+  } catch (error) {
+    if (isMissing(error)) return false;
+    throw error;
+  }
+}
 /**
  * Ends a launch nobody will watch to completion. A launch that never asked Rex for a tab has no
  * process, so its exit is certain and it gives up its ticket; after the ask, exit proof only
- * ever comes from Rex. Only an admitting run is known not to have asked, unless the caller knows.
+ * ever comes from Rex.
  */
 export async function abandon(
   run: RunRecord,
   outcome: "cancelled" | "failed",
-  cause: { error?: unknown; launched?: boolean } = {},
+  error?: unknown,
 ): Promise<void> {
-  if (isTerminal(run.lifecycle) && cause.error === undefined) return;
-  if (cause.error !== undefined) run.diagnostic = errorText(cause.error);
-  if (!(cause.launched ?? run.lifecycle !== "admitting")) {
+  if (isTerminal(run.lifecycle) && error === undefined) return;
+  if (error !== undefined) run.diagnostic = errorText(error);
+  if (!(await mayHaveAskedRex(run))) {
     await withAdmissionLock(async () => {
       await withProtocolLock(
         run.paths.lock,
@@ -488,15 +500,11 @@ export async function runForeground(
   progress: Progress,
   options: WatchOptions = {},
 ): Promise<Watched> {
-  const rexAsked = { value: false };
   try {
-    return await watch(run, entry, events, signal, progress, options, rexAsked);
+    return await watch(run, entry, events, signal, progress, options);
   } catch (error) {
-    // A resumed watch waits for the detached launch first, so a Rex block on the record is the
-    // only other way Rex was asked.
-    const launched = rexAsked.value || run.rex !== null;
     // The original error is the caller's answer; failing to record it must not replace it.
-    await abandon(run, "failed", { error, launched }).catch(() => undefined);
+    await abandon(run, "failed", error).catch(() => undefined);
     throw error;
   }
 }
@@ -507,7 +515,6 @@ async function watch(
   signal: AbortSignal | undefined,
   progress: Progress,
   options: WatchOptions,
-  rexAsked: { value: boolean },
 ): Promise<Watched> {
   if (options.resume) {
     await launchWaits().get(run.id);
@@ -540,8 +547,7 @@ async function watch(
         return true;
       }));
     if (!starting) {
-      // This watch is the launcher, and it hasn't asked Rex for a tab.
-      await abandon(run, "cancelled", { launched: false });
+      await abandon(run, "cancelled");
       return { run };
     }
     progress(run);
@@ -563,7 +569,7 @@ async function watch(
       let launch: unknown;
       try {
         // Never retry: timeout or a malformed reply can mean the child was launched.
-        rexAsked.value = true;
+        await atomicWrite(launchMarker(run), { askedAt: Date.now() });
         launch = await rexJson([
           "window",
           "new",

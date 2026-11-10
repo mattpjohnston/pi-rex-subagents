@@ -527,7 +527,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         };
       } catch (error) {
         handed.delete(_id);
-        await abandon(run, "failed", { error });
+        await abandon(run, "failed", error);
         throw error;
       } finally {
         active.delete(run.id);

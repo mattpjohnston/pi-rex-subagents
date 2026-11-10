@@ -426,6 +426,36 @@ it("a resumed launch that fails before asking Rex records that no process exists
   }
 });
 
+it("a resumed launch that may have asked Rex before a crash never claims an exit", async () => {
+  for (const ending of ["failed", "cancelled"] as const) {
+    const root = await mkdtemp(join(tmpdir(), "pirs-resume-asked-"));
+    vi.stubEnv("PI_SUBAGENTS_STATE_DIR", root);
+    try {
+      if (ending === "cancelled") await localLaunchTools(root);
+      else vi.stubEnv("PI_SUBAGENTS_REX", join(root, "missing-rex"));
+      const run = { ...record(root), background: true };
+      await privateDirectory(join(root, "runs", run.id));
+      transition(run, "starting");
+      await writeRun(run);
+      // The parent asked Rex for a tab, then crashed before saving the reply.
+      await writeFile(join(root, "runs", run.id, "rex-launch"), "");
+      if (ending === "cancelled") await writeFile(run.paths.claim, "cancelled");
+      const resumed = runForeground(run, "unused-entry", new RexEvents(), undefined, () => {}, {
+        resume: true,
+      });
+      if (ending === "failed") await expect(resumed).rejects.toThrow();
+      else await resumed;
+      expect(await readRun(run.id)).toMatchObject({
+        lifecycle: ending,
+        process: { state: "unknown" },
+      });
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
 it("repairs permissions on a pre-existing state directory", async () => {
   const root = await mkdtemp(join(tmpdir(), "pirs-permissions-"));
   try {
