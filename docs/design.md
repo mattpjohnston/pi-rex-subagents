@@ -168,7 +168,9 @@ The parent waits up to 10 seconds for an answer and reports `accepted`, `refused
 
 ## Rex actions
 
-`rex/next_waiting.lua` registers `subagents_next_waiting`. It reads the records of running subagents, picks the one that has waited longest for you, and selects its tab. `/subagents go next` runs the same script. It uses the run records rather than Rex status, because Pi's trust prompt doesn't show as a Rex status. With 48 running subagents it takes about 20 ms. Each time a subagent starts waiting, it writes one OSC 9 desktop notification to its own terminal.
+`rex/next_waiting.lua` registers `subagents_next_waiting`. It reads the records of running subagents, picks the one that has waited longest for you, and selects its tab. `/subagents go next` runs the same script. It uses the run records rather than Rex status, because the records are what the extension trusts, and they know about a trust prompt from the moment Pi raises it. With 48 running subagents it takes about 20 ms.
+
+Pi reports each dialog wait to Rex itself, through its program status, so Rex shows the tab as waiting and can send a desktop notification. Pi reports nothing for its project-trust prompt. While that prompt is open, the subagent sends the report Pi would: `blocked`, kind `permission`, message "Project trust", and `idle` when it ends. Rex then shows that wait like any other, and its own settings decide on banners and sounds. The extension sends no desktop notifications of its own. An earlier OSC 9 notice did, and gave every dialog wait two banners.
 
 `rex/keep.lua` registers `subagents_keep`, which pins or unpins the selected tab.
 

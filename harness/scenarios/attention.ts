@@ -259,6 +259,12 @@ async function benchmark(run: Run, waiting: RunRecord): Promise<number[]> {
 export default async function attention(): Promise<void> {
   await withRun("attention", async (run) => {
     const stream = watchRex(run);
+    const lastStatus = (blockId: string) => {
+      const event = stream.seen.findLast(
+        (seen) => seen.blockId === blockId && seen.name === "program_status_changed",
+      );
+      return event ? object(object(event.payload).record ?? {}) : undefined;
+    };
     try {
       const app = await appClient(run);
       // Sibling directories, not the shared scratch: a writer on a parent path blocks a child path.
@@ -425,6 +431,13 @@ export default async function attention(): Promise<void> {
         success(await run.rex.capture(trustRex.sessionId, trustRex.blockId)).stdout,
         /→ Trust \(this session only\)/,
       );
+      // Pi reports idle when its TUI starts, so this checks the report survives until the answer.
+      const trustStatus = await until("trust prompt reported to Rex as blocked", async () => {
+        const record = lastStatus(trustRex.blockId);
+        return record?.state === "blocked" && record;
+      });
+      assert.equal(trustStatus.kind, "permission");
+      assert.equal(trustStatus.msg, "Project trust");
       await key(run, trustRex, "enter");
       await trust.answer();
       const trustFinal = await until("trust exit recorded after the dropped stream", async () => {
@@ -433,37 +446,29 @@ export default async function attention(): Promise<void> {
       });
       for (const record of [dialogFinal, trustFinal]) assert.equal(record.waiting, null);
       await delay(500);
-      const notices = stream.seen.filter((event) => event.name === "desktop_notification");
-      const dialogNotices = notices.filter((event) => event.blockId === dialogRex.blockId);
-      const trustNotices = notices.filter((event) => event.blockId === trustRex.blockId);
-      assert.equal(dialogNotices.length, 2);
-      assert.equal(trustNotices.length, 1);
-      assert.match(JSON.stringify(dialogNotices), /attention-dialog.*Subagent acceptance question/);
-      assert.match(JSON.stringify(trustNotices), /attention-trust.*Project trust/);
+      const notices = stream.seen.filter(
+        (event) =>
+          event.name === "desktop_notification" &&
+          (event.blockId === dialogRex.blockId || event.blockId === trustRex.blockId),
+      );
+      assert.deepEqual(notices, [], "waits are reported as Rex status, not desktop notifications");
       assert.equal(
         (await events(dialogFinal)).filter((event) => event.type === "ui_prompt_start").length,
         2,
       );
-      assert(
-        !stream.seen.some(
-          (event) =>
-            event.blockId === trustRex.blockId &&
-            event.name === "program_status_changed" &&
-            object(object(event.payload).record ?? {}).state === "blocked",
-        ),
-      );
+      assert.notEqual(lastStatus(trustRex.blockId)?.state, "blocked", "trust status cleared");
       const noWaiting = object(success(await run.rex.command(["do", script, "--json"])).data);
       assert.equal(noWaiting.status, "no_waiting");
       await run.record("attention-evidence.json", {
         dialogFinal,
         trustFinal,
-        noticeCounts: { dialog: dialogNotices.length, trust: trustNotices.length },
+        trustStatus,
         timing: times,
         killedStreams: killed.length,
         serverPidUnchanged: serverBefore.pid === serverAfter.pid,
       });
       console.log(
-        `attention: PASS; script + go next select the oldest wait from another session; dialog moved and still produced ${dialogNotices.length} notices and a stream exit; trust notice ${trustNotices.length} with no blocked status; dropped stream reconciled a same-session move through liveness; server pid unchanged; 48 live records ms ${times.map((ms) => ms.toFixed(1)).join(", ")}; cross-session move deferred; banner remains MANUAL`,
+        `attention: PASS; script + go next select the oldest wait from another session; dialog moved and still produced a stream exit; trust prompt reported to Rex as blocked "Project trust" until answered; no desktop notifications; dropped stream reconciled a same-session move through liveness; server pid unchanged; 48 live records ms ${times.map((ms) => ms.toFixed(1)).join(", ")}; cross-session move deferred`,
       );
     } finally {
       stream.stop();
