@@ -199,8 +199,3 @@ export async function sendInboxMessage(
   if (refusal) return { status: "refused", reason: refusal };
   return waitForAck(run, message.id, MESSAGE_ACK_MS, signal);
 }
-export async function unconsumedMessages(run: RunRecord): Promise<InboxMessage[]> {
-  return (await inboxEntries(run))
-    .filter((entry) => entry.ack?.state === "accepted")
-    .map((entry) => entry.message);
-}
