@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { privateDirectory, readRun, runPaths, writeRun, type RunRecord } from "../src/records.ts";
 import { clearEligible, dismiss } from "../src/terminals.ts";
+import { controlList } from "../src/control.ts";
 
 let dir: string;
 let log: string;
@@ -269,4 +270,15 @@ test("listing a known closed tab shows closed without asking Rex", async () => {
   await list();
   expect(await calls()).toEqual(before);
   expect(notifications.join("\n")).toContain("Rex closed; process");
+});
+
+test("subagent_control list doesn't ask Rex about a tab Rex already closed", async () => {
+  const run = await record("gone");
+  await clearEligible(run);
+  const closed = await readRun(run.id);
+  expect(closed).toHaveProperty("tabClosedAt", expect.any(Number));
+  const before = await calls();
+  const listed = await controlList([closed]);
+  expect(await calls()).toEqual(before);
+  expect(listed.runs[0]).toMatchObject({ location: null, process: { state: "exited" } });
 });

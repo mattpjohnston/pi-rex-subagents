@@ -11,6 +11,11 @@ async function markTabClosed(run: RunRecord): Promise<void> {
   run.tabClosedAt = current.tabClosedAt;
 }
 
+/** Where to look for a run's tab. Once Rex has confirmed the tab closed, nowhere. */
+export function lastKnownTab(run: RunRecord): Location | null {
+  return run.tabClosedAt === undefined ? (run.location ?? run.rex) : null;
+}
+
 export async function clearEligible(
   run: RunRecord,
   sessions = new Map<string, Record<string, unknown>>(),

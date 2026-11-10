@@ -5,7 +5,7 @@ import { shouldAppend, type TransitionView } from "./delivery.ts";
 import { isTerminal, listRuns, type RunRecord } from "./records.ts";
 import { locate, object, rexJson } from "./rex.ts";
 import { cappedText } from "./results.ts";
-import { clearEligible, dismiss, keep } from "./terminals.ts";
+import { clearEligible, dismiss, keep, lastKnownTab } from "./terminals.ts";
 
 export const live = (run: RunRecord) =>
   !isTerminal(run.lifecycle) || run.process.state !== "exited";
@@ -146,8 +146,8 @@ export function registerSubagentsCommand(
       }
       const selected = args === "all" ? all.filter(live) : owned;
       for (const run of selected.slice(0, CONTROL_LIST_LIMIT)) {
-        if (run.rex && run.tabClosedAt === undefined)
-          run.location = await locate(run.rex.blockId, run.location ?? run.rex);
+        const tab = lastKnownTab(run);
+        if (tab) run.location = await locate(tab.blockId, tab);
       }
       const pending = (await views(ctx, all)).filter((run) =>
         shouldAppend(run, ctx.sessionManager.getSessionId()),

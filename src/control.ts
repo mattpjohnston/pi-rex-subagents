@@ -6,6 +6,7 @@ import { cancel } from "./launch.ts";
 import { listRuns, type RunRecord } from "./records.ts";
 import { object, observeProcess, rexJson } from "./rex.ts";
 import { cappedText } from "./results.ts";
+import { lastKnownTab } from "./terminals.ts";
 
 export const CONTROL_LIST_LIMIT = 30;
 export const ControlInput = Type.Object(
@@ -74,7 +75,7 @@ export async function controlList(runs: readonly RunRecord[]) {
   for (const run of sorted.slice(0, CONTROL_LIST_LIMIT)) {
     let lastRexStatus: unknown = null;
     let process = run.process;
-    let location = run.location ?? run.rex;
+    let location = lastKnownTab(run);
     if (location) {
       const observed = await observeProcess(location);
       process = observed.process;
