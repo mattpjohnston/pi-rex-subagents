@@ -19,6 +19,12 @@ export function processStart(pid: number): string | null {
     throw error;
   }
 }
+let ownStart: string | null | undefined;
+/** This process's start time never changes, so it is looked up once, not on every lock. */
+function ownStartTime(): string | null {
+  ownStart ??= processStart(process.pid);
+  return ownStart;
+}
 function code(error: unknown, values: string[]): boolean {
   return error instanceof Error && "code" in error && values.includes(String(error.code));
 }
@@ -30,7 +36,7 @@ export async function withLock<T>(
   const temp = `${path}.${process.pid}.${randomBytes(16).toString("hex")}.tmp`;
   await mkdir(temp, { mode: 0o700 });
   try {
-    const startTime = processStart(process.pid);
+    const startTime = ownStartTime();
     if (!startTime) throw new Error("Cannot identify lock holder");
     const file = await open(join(temp, "holder.json"), "wx", 0o600);
     try {
