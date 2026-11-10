@@ -167,6 +167,38 @@ it("records no live process when cancellation wins before Rex launch", async () 
   }
 });
 
+it("a stale writer cannot reopen an ended run or revive an exited process", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pirs-stale-"));
+  const previous = process.env.PI_SUBAGENTS_STATE_DIR;
+  process.env.PI_SUBAGENTS_STATE_DIR = root;
+  try {
+    const launcher = record(root);
+    await privateDirectory(join(root, "runs", launcher.id));
+    transition(launcher, "starting");
+    transition(launcher, "running");
+    launcher.process = { state: "live", pid: 4242 };
+    await writeRun(launcher);
+    const canceller = await readRun(launcher.id);
+    transition(canceller, "cancelled");
+    canceller.process = { state: "exited", code: 143 };
+    await writeRun(canceller);
+    launcher.diagnostic = "still polling";
+    await writeRun(launcher);
+    const saved = await readRun(launcher.id);
+    expect(saved).toMatchObject({
+      lifecycle: "cancelled",
+      finishedAt: canceller.finishedAt,
+      process: { state: "exited", code: 143 },
+      diagnostic: "still polling",
+    });
+    expect(launcher.lifecycle).toBe("running");
+  } finally {
+    if (previous === undefined) delete process.env.PI_SUBAGENTS_STATE_DIR;
+    else process.env.PI_SUBAGENTS_STATE_DIR = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 it("repairs permissions on a pre-existing state directory", async () => {
   const root = await mkdtemp(join(tmpdir(), "pirs-permissions-"));
   try {

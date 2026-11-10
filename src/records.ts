@@ -264,7 +264,17 @@ export async function writeRun(run: RunRecord): Promise<void> {
     if (saved?.activity) run.activity = saved.activity;
     if (saved?.activity?.effective) run.effective = saved.activity.effective;
     run.updatedAt = Date.now();
-    await atomicWrite(run.paths.run, parse(RunRecord, run));
+    // Several processes write whole records from memory. The first ending and a confirmed exit
+    // are final on disk; a writer that has not seen them yet must not undo them.
+    const persisted = { ...run };
+    if (saved && isTerminal(saved.lifecycle)) {
+      persisted.lifecycle = saved.lifecycle;
+      persisted.finishedAt = saved.finishedAt;
+      persisted.waiting = null;
+      persisted.queue = null;
+    }
+    if (saved?.process.state === "exited") persisted.process = saved.process;
+    await atomicWrite(run.paths.run, parse(RunRecord, persisted));
   });
 }
 /** Admission lock serializes reporter activity with lifecycle observations from other processes. */
