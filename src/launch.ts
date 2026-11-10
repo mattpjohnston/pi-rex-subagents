@@ -624,8 +624,6 @@ export async function runForeground(
         );
         run.unconsumedMessages = pending.map(({ id, text }) => ({ id, text }));
         transition(run, "taken_over");
-        run.waiting = null;
-        run.queue = null;
         await writeRun(run);
         progress(run);
         return { run, checkout: await finishCheckout(run, before) };
@@ -692,8 +690,6 @@ export async function runForeground(
       }
       await delay(200);
     }
-    run.waiting = null;
-    run.queue = null;
     await writeRun(run);
     progress(run);
     const checkout = await finishCheckout(run, before);

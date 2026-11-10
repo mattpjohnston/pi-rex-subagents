@@ -290,19 +290,25 @@ export async function readResult(run: RunRecord): Promise<ResultFile> {
 export function isTerminal(state: Lifecycle): state is Outcome {
   return !["admitting", "starting", "running"].includes(state);
 }
+/** An ended run is never waiting for a human or queued, whoever ends it. */
 export function transition(run: RunRecord, next: Lifecycle): void {
-  if (run.lifecycle === next) return;
-  const allowed =
-    run.lifecycle === "admitting"
-      ? next === "starting" || next === "cancelled" || next === "failed"
-      : run.lifecycle === "starting"
-        ? next === "running" || isTerminal(next)
-        : run.lifecycle === "running"
-          ? isTerminal(next)
-          : false;
-  if (!allowed) throw new Error(`Invalid lifecycle transition ${run.lifecycle} -> ${next}`);
-  run.lifecycle = next;
-  if (isTerminal(next)) run.finishedAt = Date.now();
+  if (run.lifecycle !== next) {
+    const allowed =
+      run.lifecycle === "admitting"
+        ? next === "starting" || next === "cancelled" || next === "failed"
+        : run.lifecycle === "starting"
+          ? next === "running" || isTerminal(next)
+          : run.lifecycle === "running"
+            ? isTerminal(next)
+            : false;
+    if (!allowed) throw new Error(`Invalid lifecycle transition ${run.lifecycle} -> ${next}`);
+    run.lifecycle = next;
+    if (isTerminal(next)) run.finishedAt = Date.now();
+  }
+  if (isTerminal(next)) {
+    run.waiting = null;
+    run.queue = null;
+  }
 }
 export async function listRuns(): Promise<RunRecord[]> {
   let ids: string[];

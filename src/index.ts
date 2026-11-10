@@ -153,8 +153,6 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       await cancel(run);
       transition(run, "cancelled");
       run.process = { state: "exited", code: null };
-      run.waiting = null;
-      run.queue = null;
       await writeRun(run);
     }
   });

@@ -71,6 +71,19 @@ it("permits explicit lifecycle edges, never resurrection or completion directly 
   expect(run.finishedAt).toBeTypeOf("number");
   expect(() => transition(run, "running")).toThrow();
 });
+it("an ended run is neither waiting for a human nor queued", () => {
+  for (const outcome of ["failed", "cancelled", "taken_over"] as const) {
+    const run = record(tmpdir());
+    run.queue = { reason: "checkout", detail: "older writer", since: 1 };
+    transition(run, "starting");
+    run.waiting = { source: "reporter", kind: "confirm", title: "Proceed?", since: 2 };
+    transition(run, outcome);
+    expect([run.waiting, run.queue]).toEqual([null, null]);
+    run.waiting = { source: "rex", kind: "blocked", title: "Pi dialog", since: 3 };
+    transition(run, outcome);
+    expect(run.waiting).toBeNull();
+  }
+});
 it("validates every disk read and rejects a well-formed result from another run", async () => {
   const root = await mkdtemp(join(tmpdir(), "pirs-record-"));
   const previous = process.env.PI_SUBAGENTS_STATE_DIR;
