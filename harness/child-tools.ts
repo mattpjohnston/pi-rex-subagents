@@ -3,7 +3,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { claim, withRunLock } from "../src/claims.ts";
+import { claim, withProtocolLock } from "../src/claims.ts";
 import { atomicWrite, readRun } from "../src/records.ts";
 import { Type } from "typebox";
 
@@ -40,7 +40,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     });
   if (mode === "malformed" || mode === "wrong-id" || mode === "missing-file")
     pi.on("agent_before_settle", async (_event, ctx) => {
-      await withRunLock(run.paths.lock, async () => {
+      await withProtocolLock(run.paths.lock, async () => {
         if (mode !== "missing-file")
           await atomicWrite(
             run.paths.result,

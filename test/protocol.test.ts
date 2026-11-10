@@ -3,7 +3,8 @@ import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { claim, processStart, readClaim, recoverStaleRunLock, withRunLock } from "../src/claims.ts";
+import { claim, readClaim } from "../src/claims.ts";
+import { processStart, recoverStaleLock, withLock } from "../src/locks.ts";
 import { listRuns, parse, ResultFile, RunRecord } from "../src/records.ts";
 import { cappedText, deriveOutcome } from "../src/results.ts";
 import { resolveSettings } from "../src/settings.ts";
@@ -72,6 +73,8 @@ describe("claim protocol", () => {
     });
   });
 });
+const runLock = <T>(path: string, body: () => Promise<T>) =>
+  withLock(path, body, () => recoverStaleLock(path));
 describe("run lock", () => {
   it("recovers metadata belonging to a confirmed dead process", async () => {
     await scratch(async (dir) => {
@@ -93,7 +96,7 @@ describe("run lock", () => {
       });
       child.kill("SIGKILL");
       await exited;
-      expect(await recoverStaleRunLock(lock)).toBe(true);
+      expect(await recoverStaleLock(lock)).toBe(true);
     });
   });
   it("serializes contenders and releases on failure", async () => {
@@ -101,7 +104,7 @@ describe("run lock", () => {
       const lock = join(dir, "lock");
       const order: string[] = [];
       const acquired = Promise.withResolvers<void>();
-      const first = withRunLock(lock, async () => {
+      const first = runLock(lock, async () => {
         order.push("first");
         acquired.resolve();
         await new Promise((r) => setTimeout(r, 80));
@@ -110,12 +113,12 @@ describe("run lock", () => {
       await acquired.promise;
       await Promise.all([
         first,
-        withRunLock(lock, async () => {
+        runLock(lock, async () => {
           order.push("second");
         }),
       ]);
       expect(order).toEqual(["first", "released", "second"]);
-      await expect(withRunLock(lock, () => Promise.reject(new Error("failure")))).rejects.toThrow(
+      await expect(runLock(lock, () => Promise.reject(new Error("failure")))).rejects.toThrow(
         "failure",
       );
       await expect(stat(lock)).rejects.toMatchObject({ code: "ENOENT" });
@@ -124,19 +127,19 @@ describe("run lock", () => {
   it("keeps live or unidentified holders and recovers a reused PID", async () => {
     await scratch(async (dir) => {
       const lock = join(dir, "lock");
-      await withRunLock(lock, async () => {
-        expect(await recoverStaleRunLock(lock)).toBe(false);
+      await runLock(lock, async () => {
+        expect(await recoverStaleLock(lock)).toBe(false);
       });
       await mkdir(lock);
       await writeFile(
         join(lock, "holder.json"),
         JSON.stringify({ pid: process.pid, startTime: "different incarnation", token: "old" }),
       );
-      expect(await recoverStaleRunLock(lock)).toBe(true);
+      expect(await recoverStaleLock(lock)).toBe(true);
       await mkdir(lock);
-      expect(await recoverStaleRunLock(lock)).toBe(false);
+      expect(await recoverStaleLock(lock)).toBe(false);
       await utimes(lock, 1, 1);
-      expect(await recoverStaleRunLock(lock)).toBe(false);
+      expect(await recoverStaleLock(lock)).toBe(false);
       expect(processStart(process.pid)).toBeTruthy();
     });
   });

@@ -4,7 +4,6 @@ import { link, open, readFile, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { isMissing, privateDirectory, stateDir, syncDirectory } from "./records.ts";
 import { recoverStaleLock, withLock } from "./locks.ts";
-export { processStart } from "./locks.ts";
 
 export type Claim = "result" | "taken_over" | "cancelled";
 export async function readClaim(path: string): Promise<Claim | null> {
@@ -67,19 +66,7 @@ export async function withAdmissionLock<T>(body: () => Promise<T>): Promise<T> {
     () => recoverStaleLock(path),
   );
 }
-export async function withRunLock<T>(
-  path: string,
-  body: () => Promise<T>,
-  admissionHeld = false,
-): Promise<T> {
-  return withLock(path, body, () =>
-    admissionHeld ? recoverStaleRunLock(path) : withAdmissionLock(() => recoverStaleRunLock(path)),
-  );
-}
-/** Caller holds the admission lock. A live or unidentified holder is retained, regardless of age. */
-export const recoverStaleRunLock = recoverStaleLock;
-
 /** Every protocol operation takes admission before run, including stale-holder recovery. */
 export async function withProtocolLock<T>(path: string, body: () => Promise<T>): Promise<T> {
-  return withAdmissionLock(() => withRunLock(path, body, true));
+  return withAdmissionLock(() => withLock(path, body, () => recoverStaleLock(path)));
 }

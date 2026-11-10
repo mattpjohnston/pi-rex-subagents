@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { claim, withRunLock } from "../../src/claims.ts";
+import { claim, withProtocolLock } from "../../src/claims.ts";
 import { cancel } from "../../src/launch.ts";
 import { observeProcess } from "../../src/rex.ts";
 import { withRun } from "../lib/run.ts";
@@ -91,7 +91,7 @@ export default async function takeover(): Promise<void> {
     const cancelledLive = await current(run, cancelledRecord.id);
     assert(cancelledLive.rex);
     // Pause parent cancellation between the durable step and signalling to force this ordering.
-    await withRunLock(cancelledLive.paths.lock, () =>
+    await withProtocolLock(cancelledLive.paths.lock, () =>
       claim(cancelledLive.paths.claim, "cancelled"),
     );
     await send(run, cancelledLive.rex, "/subagent-takeover");

@@ -28,7 +28,7 @@ import {
   listRuns,
   type ModelSettings,
 } from "./records.ts";
-import { claim, readClaim, withAdmissionLock, withProtocolLock, withRunLock } from "./claims.ts";
+import { claim, readClaim, withAdmissionLock, withProtocolLock } from "./claims.ts";
 import { admit, claimedAncestor, readLimits, removeTicket } from "./admission.ts";
 import { InboxMessage } from "./inbox.ts";
 import { checkoutRoot } from "./checkout.ts";
@@ -232,11 +232,10 @@ export async function cancel(
       ancestor = parent.parentRunId;
     }
     const visit = async (current: RunRecord): Promise<"result" | "taken_over" | "cancelled"> => {
-      const winner = await withRunLock(
+      const winner = await withProtocolLock(
         current.paths.lock,
         async () =>
           (await readClaim(current.paths.claim)) ?? claim(current.paths.claim, "cancelled"),
-        true,
       );
       if (winner === "taken_over") return winner;
       await removeTicket(current.id);

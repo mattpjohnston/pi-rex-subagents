@@ -8,7 +8,7 @@ import { canonicalTarget, checkoutRoot } from "../src/checkout.ts";
 import { contains, overlaps } from "../src/admission-core.ts";
 import { admit, readLimits } from "../src/admission.ts";
 import { privateDirectory, runPaths, writeRun, type RunRecord } from "../src/records.ts";
-import { withRunLock } from "../src/claims.ts";
+import { recoverStaleLock, withLock } from "../src/locks.ts";
 
 async function scratch(body: (dir: string) => Promise<void>) {
   const dir = await realpath(await mkdtemp(join(tmpdir(), "pirs-admission-test-")));
@@ -30,11 +30,15 @@ it("waiters automatically recover a dead run holder instead of timing out", asyn
       join(lock, "holder.json"),
       JSON.stringify({ pid: process.pid, startTime: "earlier incarnation", token: "stale" }),
     );
-    await withRunLock(lock, async () => {
-      expect(JSON.parse(await readFile(join(lock, "holder.json"), "utf8"))).toMatchObject({
-        pid: process.pid,
-      });
-    });
+    await withLock(
+      lock,
+      async () => {
+        expect(JSON.parse(await readFile(join(lock, "holder.json"), "utf8"))).toMatchObject({
+          pid: process.pid,
+        });
+      },
+      () => recoverStaleLock(lock),
+    );
     await expect(stat(lock)).rejects.toMatchObject({ code: "ENOENT" });
   });
 }, 3000);
@@ -53,11 +57,11 @@ it("publishes the lock and its holder atomically to another process", async () =
       }
     });
     try {
-      const source = new URL("../src/claims.ts", import.meta.url).href;
+      const source = new URL("../src/locks.ts", import.meta.url).href;
       const child = spawn(process.execPath, [
         "--input-type=module",
         "-e",
-        `import {withRunLock} from ${JSON.stringify(source)}; await withRunLock(${JSON.stringify(lock)},()=>new Promise(r=>setTimeout(r,100)));`,
+        `import {recoverStaleLock, withLock} from ${JSON.stringify(source)}; const lock = ${JSON.stringify(lock)}; await withLock(lock,()=>new Promise(r=>setTimeout(r,100)),()=>recoverStaleLock(lock));`,
       ]);
       await new Promise<void>((resolve, reject) => {
         child.once("error", reject);

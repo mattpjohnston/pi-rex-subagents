@@ -3,7 +3,7 @@ import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { Type, type Static } from "typebox";
-import { readClaim, withAdmissionLock, withRunLock } from "./claims.ts";
+import { readClaim, withProtocolLock } from "./claims.ts";
 import { atomicWrite, isMissing, parse, readJson, type RunRecord } from "./records.ts";
 import type { MessageState } from "./protocol.ts";
 
@@ -182,20 +182,14 @@ export async function sendInboxMessage(
     text,
     createdAt: Date.now(),
   });
-  const refusal = await withAdmissionLock(() =>
-    withRunLock(
-      run.paths.lock,
-      async () => {
-        const winner = await readClaim(run.paths.claim);
-        if (winner) return winner;
-        if (run.lifecycle !== "running" || !run.rex || run.process.state === "exited")
-          return "Child is not live";
-        await atomicWrite(join(run.paths.inbox, `${message.id}.json`), message);
-        return null;
-      },
-      true,
-    ),
-  );
+  const refusal = await withProtocolLock(run.paths.lock, async () => {
+    const winner = await readClaim(run.paths.claim);
+    if (winner) return winner;
+    if (run.lifecycle !== "running" || !run.rex || run.process.state === "exited")
+      return "Child is not live";
+    await atomicWrite(join(run.paths.inbox, `${message.id}.json`), message);
+    return null;
+  });
   if (refusal) return { status: "refused", reason: refusal };
   return waitForAck(run, message.id, MESSAGE_ACK_MS, signal);
 }
