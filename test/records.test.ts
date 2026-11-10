@@ -1,5 +1,5 @@
 import { progressUpdate } from "../src/index.ts";
-import { observeRexEvent, runForeground } from "../src/launch.ts";
+import { observeRexEvent, runForeground, startBackground } from "../src/launch.ts";
 import { RexEvents } from "../src/rex.ts";
 import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -192,6 +192,33 @@ it("a stale writer cannot reopen an ended run or revive an exited process", asyn
       diagnostic: "still polling",
     });
     expect(launcher.lifecycle).toBe("running");
+  } finally {
+    if (previous === undefined) delete process.env.PI_SUBAGENTS_STATE_DIR;
+    else process.env.PI_SUBAGENTS_STATE_DIR = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("a background launch refused before it queues returns the refusal", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pirs-refused-"));
+  const previous = process.env.PI_SUBAGENTS_STATE_DIR;
+  process.env.PI_SUBAGENTS_STATE_DIR = root;
+  try {
+    const run = record(root);
+    run.background = true;
+    await privateDirectory(join(root, "runs", run.id));
+    await writeRun(run);
+    await writeFile(join(root, "limits.json"), JSON.stringify({ active: 0 }));
+    const started = startBackground(run, "unused-entry", new RexEvents(), undefined, () => {}, {});
+    started.done.catch(() => undefined);
+    const outcome = await Promise.race([
+      started.ready.then(
+        () => "returned",
+        (error: unknown) => (error instanceof Error ? error.message : String(error)),
+      ),
+      new Promise((resolve) => setTimeout(() => resolve("still waiting after 2 s"), 2000)),
+    ]);
+    expect(outcome).toMatch(/Invalid admission limits/);
   } finally {
     if (previous === undefined) delete process.env.PI_SUBAGENTS_STATE_DIR;
     else process.env.PI_SUBAGENTS_STATE_DIR = previous;

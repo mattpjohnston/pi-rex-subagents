@@ -710,8 +710,10 @@ export function startBackground(
   options: WatchOptions,
 ): { ready: Promise<RunRecord>; done: Promise<{ run: RunRecord }> } {
   let release: (current: RunRecord) => void = () => {};
-  const ready = new Promise<RunRecord>((resolve) => {
+  let refuse: (error: unknown) => void = () => {};
+  const ready = new Promise<RunRecord>((resolve, reject) => {
     release = resolve;
+    refuse = reject;
   });
   let released = false;
   const note = (current: RunRecord) => {
@@ -721,12 +723,22 @@ export function startBackground(
       release(current);
     }
   };
-  const done = runForeground(run, entry, events, signal, note, options).then((outcome) => {
-    if (!released) {
-      released = true;
-      release(outcome.run);
-    }
-    return outcome;
-  });
+  const done = runForeground(run, entry, events, signal, note, options).then(
+    (outcome) => {
+      if (!released) {
+        released = true;
+        release(outcome.run);
+      }
+      return outcome;
+    },
+    (error: unknown) => {
+      // A refusal before the run queues, such as a wait cycle, is the launch call's answer.
+      if (!released) {
+        released = true;
+        refuse(error);
+      }
+      throw error;
+    },
+  );
   return { ready, done };
 }
