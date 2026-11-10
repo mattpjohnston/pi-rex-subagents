@@ -455,18 +455,25 @@ async function savedBefore(run: RunRecord): Promise<Fingerprint | undefined> {
   return undefined;
 }
 /**
- * Ends a launch nobody will watch to completion. Before Rex is asked for a tab no process can
- * exist, so its exit is certain; after that, exit proof only ever comes from Rex.
+ * Ends a launch nobody will watch to completion. A launch that never asked Rex for a tab has no
+ * process, so its exit is certain and it gives up its ticket; after the ask, exit proof only
+ * ever comes from Rex. Only an admitting run is known not to have asked, unless the caller knows.
  */
 export async function abandon(
   run: RunRecord,
   outcome: "cancelled" | "failed",
-  error?: unknown,
+  cause: { error?: unknown; launched?: boolean } = {},
 ): Promise<void> {
-  if (isTerminal(run.lifecycle) && error === undefined) return;
-  if (error !== undefined) run.diagnostic = errorText(error);
-  if (run.lifecycle === "admitting") {
-    await cancel(run);
+  if (isTerminal(run.lifecycle) && cause.error === undefined) return;
+  if (cause.error !== undefined) run.diagnostic = errorText(cause.error);
+  if (!(cause.launched ?? run.lifecycle !== "admitting")) {
+    await withAdmissionLock(async () => {
+      await withProtocolLock(
+        run.paths.lock,
+        async () => (await readClaim(run.paths.claim)) ?? claim(run.paths.claim, "cancelled"),
+      );
+      await removeTicket(run.id);
+    });
     run.process = { state: "exited", code: null };
   }
   if (!isTerminal(run.lifecycle)) transition(run, outcome);
@@ -485,7 +492,7 @@ export async function runForeground(
     return await watch(run, entry, events, signal, progress, options);
   } catch (error) {
     // The original error is the caller's answer; failing to record it must not replace it.
-    await abandon(run, "failed", error).catch(() => undefined);
+    await abandon(run, "failed", { error }).catch(() => undefined);
     throw error;
   }
 }
@@ -528,7 +535,8 @@ async function watch(
         return true;
       }));
     if (!starting) {
-      await abandon(run, "cancelled");
+      // This watch is the launcher, and it hasn't asked Rex for a tab.
+      await abandon(run, "cancelled", { launched: false });
       return { run };
     }
     progress(run);
