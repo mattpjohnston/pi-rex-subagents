@@ -403,6 +403,29 @@ it("a resumed launch cancelled before it asks Rex records that no process exists
   }
 });
 
+it("a resumed launch that fails before asking Rex records that no process exists", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pirs-resume-fail-"));
+  vi.stubEnv("PI_SUBAGENTS_STATE_DIR", root);
+  vi.stubEnv("PI_SUBAGENTS_REX", join(root, "missing-rex"));
+  try {
+    const run = { ...record(root), background: true };
+    await privateDirectory(join(root, "runs", run.id));
+    // A reload detached the watcher after admission, before it asked Rex for a tab.
+    transition(run, "starting");
+    await writeRun(run);
+    await expect(
+      runForeground(run, "unused-entry", new RexEvents(), undefined, () => {}, { resume: true }),
+    ).rejects.toThrow();
+    expect(await readRun(run.id)).toMatchObject({
+      lifecycle: "failed",
+      process: { state: "exited", code: null },
+    });
+  } finally {
+    vi.unstubAllEnvs();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 it("repairs permissions on a pre-existing state directory", async () => {
   const root = await mkdtemp(join(tmpdir(), "pirs-permissions-"));
   try {

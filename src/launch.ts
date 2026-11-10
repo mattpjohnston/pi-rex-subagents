@@ -488,11 +488,15 @@ export async function runForeground(
   progress: Progress,
   options: WatchOptions = {},
 ): Promise<Watched> {
+  const rexAsked = { value: false };
   try {
-    return await watch(run, entry, events, signal, progress, options);
+    return await watch(run, entry, events, signal, progress, options, rexAsked);
   } catch (error) {
+    // A resumed watch waits for the detached launch first, so a Rex block on the record is the
+    // only other way Rex was asked.
+    const launched = rexAsked.value || run.rex !== null;
     // The original error is the caller's answer; failing to record it must not replace it.
-    await abandon(run, "failed", { error }).catch(() => undefined);
+    await abandon(run, "failed", { error, launched }).catch(() => undefined);
     throw error;
   }
 }
@@ -503,6 +507,7 @@ async function watch(
   signal: AbortSignal | undefined,
   progress: Progress,
   options: WatchOptions,
+  rexAsked: { value: boolean },
 ): Promise<Watched> {
   if (options.resume) {
     await launchWaits().get(run.id);
@@ -558,6 +563,7 @@ async function watch(
       let launch: unknown;
       try {
         // Never retry: timeout or a malformed reply can mean the child was launched.
+        rexAsked.value = true;
         launch = await rexJson([
           "window",
           "new",
