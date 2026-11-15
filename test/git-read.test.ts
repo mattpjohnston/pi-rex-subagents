@@ -159,6 +159,10 @@ it("does not run a clean filter, smudge filter, diff driver, external diff, fsmo
   execFileSync("git", ["-C", root, "config", "filter.x.clean", filter.script]);
   execFileSync("git", ["-C", root, "config", "filter.x.smudge", filter.script]);
   await writeFile(join(root, ".gitattributes"), "* filter=x\n");
+  // Status hashes a file, and so runs its filter, only when the size matches the index and the
+  // timestamp doesn't. Without this the control relies on f being racily clean, which load breaks.
+  await writeFile(join(root, "f"), "ho\n");
+  await utimes(join(root, "f"), new Date(), new Date(Date.now() + 60_000));
   execFileSync("git", ["-C", root, "status", "--porcelain"]);
   expect(await readFile(filter.marker, "utf8")).toMatch(/ran/);
   await rm(filter.marker);
