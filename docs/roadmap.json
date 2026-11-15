@@ -9,8 +9,8 @@
         "Writers in the same non-repository directory still exclude each other",
         "Unit test fails before the change"
       ],
-      "status": "todo",
-      "evidence": null,
+      "status": "done",
+      "evidence": "models: home and repository writers hold at once under the current rule and never under the old one; a writer in a plain directory under home still waits; 20,000-tree sweep with plain-directory roots all OK. test/admission.test.ts agreement with the model fails before (dir cases) and passes after. test/guard.test.ts: an edit in a repository under a plain-directory writer was refused before, allowed after; an edit in the plain directory itself is still refused. scripts/check.sh all pass, 159 tests.",
       "commit": null
     },
     {

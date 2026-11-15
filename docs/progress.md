@@ -13,3 +13,9 @@ The end-to-end review is on main (5d42c2c..d7dfc10, 36 commits). The full harnes
 Found while setting up: a research subagent started from the home directory (run f18a68b7c90c1c18799bebdc, a writer with cwd /Users/matt) reserved the whole home tree, so the parent guard refused every edit in this repository. That became the first roadmap item, home-checkout.
 
 Next: home-checkout.
+
+## 2026-11-15 home-checkout
+
+A plain directory (not inside any git repository) no longer conflicts with repositories inside it, in admission and in the parent's edit guard. Plain directories still conflict with each other and with plain directories inside them. The admission model changed first: its new check shows the home and repository writers never hold at once under the old rule and do under the new one, and the random sweep now includes plain-directory roots. Admission uses `conflicts()` in admission-core.ts; the guard uses `checkoutHolds()` in checkout.ts, which looks for a `.git` between the plain directory and the target.
+
+Next: release.

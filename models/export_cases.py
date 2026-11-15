@@ -5,7 +5,7 @@ import sys
 from collections import deque
 
 from admission import (
-    blockers, has_slot, initial, on_cycle, reservation_for, successors,
+    blockers, has_slot, initial, is_repository, on_cycle, reservation_for, successors,
     waits_for, wakeable,
 )
 from run import NAMED, random_spec
@@ -18,7 +18,8 @@ def snapshot(spec, s):
             {
                 "id": str(i),
                 "parent": str(r["parent"]) if spec.managed(r["parent"]) else None,
-                "access": r["access"], "checkout": r["checkout"], "provider": r["provider"],
+                "access": r["access"], "checkout": r["checkout"], "repository": is_repository(r["checkout"]),
+                "provider": r["provider"],
                 "state": {"parked_fg": "parked", "parked_settle": "parked", "pending": "exited", "refused": "exited"}.get(s[i][0], s[i][0]),
                 "reservation": str(s[i][3]) if s[i][3] is not None else None,
                 "ticket": s[i][4], "detached": s[i][5],

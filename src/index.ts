@@ -7,9 +7,8 @@ import {
   type ExtensionAPI,
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { contains } from "./admission-core.ts";
 import { canLaunchChildren, park, readLimits, wake, writerOnPath } from "./admission.ts";
-import { canonicalTarget, checkoutRoot } from "./checkout.ts";
+import { canonicalTarget, checkoutHolds, checkoutRoot } from "./checkout.ts";
 import { ownedRuns, registerControl, treeOrder, waitingFirst } from "./control.ts";
 import { live, registerSubagentsCommand, statusLine } from "./commands.ts";
 import { readClaim } from "./claims.ts";
@@ -93,7 +92,7 @@ async function sameMessageWriter(
           : "pending launch";
       const cwd = typeof part.arguments.cwd === "string" ? part.arguments.cwd : undefined;
       const root = await checkoutRoot(await workingDirectory(ctx.cwd, cwd));
-      if (contains(root, target)) return { id: part.id, label, checkoutRoot: root };
+      if (checkoutHolds(root, target)) return { id: part.id, label, checkoutRoot: root };
     }
     return null;
   }
@@ -166,7 +165,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       const target = await canonicalTarget(ctx.cwd, path);
       const writer =
         (await sameMessageWriter(ctx, target)) ??
-        [...intended.values()].find((run) => contains(run.checkoutRoot, target)) ??
+        [...intended.values()].find((run) => checkoutHolds(run.checkoutRoot, target)) ??
         (await writerOnPath(target, childId));
       if (writer)
         return {

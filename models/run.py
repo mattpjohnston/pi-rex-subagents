@@ -1,4 +1,6 @@
 import random, sys
+from collections import deque
+import admission
 from admission import Spec, check
 
 def H(plan): return {"parent": None, "access": None, "checkout": None, "mode": None, "plan": plan, "provider": None}
@@ -40,6 +42,12 @@ NAMED = {
     "nested_repository": (Spec([
         H([[2]]), H([[3]]), R(0, "write", "repo", "bg"), R(1, "write", "repo/nested", "bg"),
     ], ceiling=4), "OK", "OK"),
+    # 15 November 2026: a writer started from a plain home directory runs beside a writer in a
+    # repository beneath it, but still excludes a writer in a plain directory beneath it.
+    "home_writer_beside_repo_writer": (Spec([
+        H([[2]]), H([[3, 4]]), R(0, "write", "_home", "bg"), R(1, "write", "_home/repo", "bg"),
+        R(1, "write", "_home/_notes", "bg"),
+    ], ceiling=4), "OK", "OK"),
     # Kimi: a per-provider ceiling under a looser global one.
     "provider_ceiling": (Spec([
         H([[1, 2, 3]]), R(0, "write", "A", "bg", provider="xai"), R(0, "write", "B", "bg", provider="xai"), R(0, "read", "C", "bg", provider="p"),
@@ -51,7 +59,7 @@ NAMED = {
 }
 
 
-def random_spec(rng, max_depth=2, roots=("A", "B"), budget=(2, 5)):
+def random_spec(rng, max_depth=2, roots=("A", "B", "_H"), budget=(2, 5)):
     runs = [H([]) for _ in range(rng.choice([1, 2]))]
     humans, left = len(runs), rng.randint(*budget)
     def add(parent, depth):
@@ -90,10 +98,34 @@ if __name__ == "__main__":
             print(f"{'ok  ' if ok else 'FAIL'} {name:30} {rules:8} expected {want:8} got {got[0]:8} {got[1] if got[0] != 'OK' else ''}")
             if not ok:
                 print("     trace:", " -> ".join(got[2]))
+    # Safety alone can't show the 15 November relaxation does anything: the old, stricter rule
+    # was safe too. Show the home and repository writers actually hold at once, which the old
+    # rule never allows.
+    def together(spec, a, b):
+        start = admission.initial(spec)
+        seen, queue = {start}, deque([start])
+        while queue:
+            state = queue.popleft()
+            if admission.holds(spec, state[0], a) and admission.holds(spec, state[0], b):
+                return True
+            for nxt, _ in admission.successors(spec, state, "current"):
+                if nxt not in seen:
+                    seen.add(nxt)
+                    queue.append(nxt)
+        return False
+    home = NAMED["home_writer_beside_repo_writer"][0]
+    current = admission.overlaps
+    admission.overlaps = lambda x, y: x == y or x.startswith(y + "/") or y.startswith(x + "/")
+    old_together = together(home, 2, 3)
+    admission.overlaps = current
+    new_together, notes_together = together(home, 2, 3), together(home, 2, 4)
+    ok = not old_together and new_together and not notes_together
+    failed += not ok
+    print(f"{'ok  ' if ok else 'FAIL'} home and repository writers hold at once: old rule {old_together}, current {new_together}; home and plain-directory writers {notes_together}")
     n = int(sys.argv[1]) if len(sys.argv) > 1 else 3000
     rng, tally = random.Random(19), {}
     for k in range(n):
-        spec = random_spec(rng, max_depth=2 if k % 2 else 3, roots=("A", "B") if k % 3 else ("A", "B", "C"), budget=(2, 5) if k % 4 else (4, 7))
+        spec = random_spec(rng, max_depth=2 if k % 2 else 3, roots=("A", "B", "_H") if k % 3 else ("A", "B", "C", "_H"), budget=(2, 5) if k % 4 else (4, 7))
         got = check(spec, "current")
         tally[got[0]] = tally.get(got[0], 0) + 1
         if got[0] in ("UNSAFE", "DEADLOCK"):

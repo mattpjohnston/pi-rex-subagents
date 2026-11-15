@@ -103,7 +103,7 @@ Subagents use Pi's normal trust prompts. The extension watches for the trust eve
 
 Before a subagent starts, the extension decides whether it may run now or must wait. The extension calls this admission. It works machine-wide, through files, with no background service. One lock directory serializes decisions. Each waiting launch holds a numbered ticket. Each running subagent belongs to one reservation for its repository.
 
-A repository is identified by its real path: the Git working-tree root, or the directory itself. Two paths conflict when one contains the other, so a repository nested inside another conflicts with it. Separate worktrees don't conflict.
+A repository is identified by its real path: the Git working-tree root, or the directory itself. Two paths conflict when one contains the other, so a repository nested inside another conflicts with it. Separate worktrees don't conflict. The exception is a plain directory, one that isn't inside any repository, such as your home folder: a subagent there doesn't conflict with repositories inside it, and doesn't block your edits in them. Otherwise one research subagent started from `~` would hold every project you have.
 
 | Situation                                              | Rule                |
 | ------------------------------------------------------ | ------------------- |

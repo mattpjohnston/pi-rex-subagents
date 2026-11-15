@@ -12,9 +12,21 @@ LIVE = {"running", "parked_fg", "parked_settle", "taken"}
 HOLDING = LIVE  # a run holds its reservation membership while its process lives
 
 
+def is_repository(x):
+    """A root whose last component starts with "_" is a plain directory, not a git repository."""
+    return not x.rsplit("/", 1)[-1].startswith("_")
+
+
 def overlaps(x, y):
-    """Checkouts conflict when their roots are equal or one contains the other."""
-    return x == y or x.startswith(y + "/") or y.startswith(x + "/")
+    """Checkouts conflict when their roots are equal or one contains the other, except that a
+    plain directory does not conflict with a repository inside it (amended 15 November 2026)."""
+    if x == y:
+        return True
+    if y.startswith(x + "/"):
+        return is_repository(x) or not is_repository(y)
+    if x.startswith(y + "/"):
+        return is_repository(y) or not is_repository(x)
+    return False
 
 
 class Spec:

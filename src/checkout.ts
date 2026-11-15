@@ -1,7 +1,9 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { contains } from "./admission-core.ts";
 import { isMissing } from "./records.ts";
 
 export async function checkoutRoot(cwd: string): Promise<string> {
@@ -44,4 +46,17 @@ export async function canonicalTarget(cwd: string, input: string): Promise<strin
       path = parent;
     }
   }
+}
+
+/** checkoutRoot returns a repository's top level, which holds .git, or a plain directory. */
+export function isRepository(root: string): boolean {
+  return existsSync(join(root, ".git"));
+}
+/** Whether a child's checkout covers a path: a plain directory doesn't cover repositories in it. */
+export function checkoutHolds(root: string, target: string): boolean {
+  if (!contains(root, target)) return false;
+  if (isRepository(root)) return true;
+  for (let dir = dirname(target); dir !== root && contains(root, dir); dir = dirname(dir))
+    if (isRepository(dir)) return false;
+  return true;
 }

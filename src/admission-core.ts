@@ -4,6 +4,8 @@ export interface AdmissionRun {
   parent: string | null;
   access: Access;
   checkout: string;
+  /** False for a plain directory: it then doesn't conflict with a repository inside it. */
+  repository: boolean;
   provider: string;
   state: "queued" | "running" | "parked" | "taken" | "exited";
   reservation: string | null;
@@ -37,6 +39,14 @@ export function contains(root: string, target: string): boolean {
 export function overlaps(a: string, b: string): boolean {
   return contains(a, b) || contains(b, a);
 }
+type Checkout = Pick<AdmissionRun, "checkout" | "repository">;
+/** Overlapping checkouts conflict, except a plain directory and a repository inside it. */
+export function conflicts(a: Checkout, b: Checkout): boolean {
+  if (a.checkout === b.checkout) return true;
+  if (contains(a.checkout, b.checkout)) return a.repository || !b.repository;
+  if (contains(b.checkout, a.checkout)) return b.repository || !a.repository;
+  return false;
+}
 const compatible = (a: Access, b: Access) => a !== "write" && b !== "write";
 const holds = (r: AdmissionRun) =>
   r.reservation !== null && r.state !== "queued" && r.state !== "exited";
@@ -52,22 +62,19 @@ function ancestors(snapshot: Snapshot, run: AdmissionRun): AdmissionRun[] {
   return out;
 }
 export function reservationFor(snapshot: Snapshot, run: AdmissionRun): string | null {
-  return (
-    ancestors(snapshot, run).find((a) => holds(a) && overlaps(a.checkout, run.checkout))
-      ?.reservation ?? null
-  );
+  return ancestors(snapshot, run).find((a) => holds(a) && conflicts(a, run))?.reservation ?? null;
 }
 export function blockers(snapshot: Snapshot, run: AdmissionRun, older: AdmissionRun[]): string[] {
   const anc = ancestors(snapshot, run);
   const reservation = reservationFor(snapshot, run);
   const out = new Set<string>();
   for (const other of snapshot.runs) {
-    if (other.id === run.id || !holds(other) || !overlaps(other.checkout, run.checkout)) continue;
+    if (other.id === run.id || !holds(other) || !conflicts(other, run)) continue;
     if (anc.includes(other) && other.reservation === reservation) continue;
     if (!compatible(run.access, other.access)) out.add(other.id);
   }
   for (const other of older) {
-    if (!overlaps(other.checkout, run.checkout) || compatible(run.access, other.access)) continue;
+    if (!conflicts(other, run) || compatible(run.access, other.access)) continue;
     if (reservation !== null && reservationFor(snapshot, other) !== reservation) continue;
     out.add(other.id);
   }

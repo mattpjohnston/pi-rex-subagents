@@ -3,10 +3,9 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { Type, type Static } from "typebox";
 import {
-  contains,
+  conflicts,
   decide,
   launchCycle,
-  overlaps,
   reservationFor,
   type AdmissionRun,
   type Limits,
@@ -29,6 +28,7 @@ import {
   RunRecord,
 } from "./records.ts";
 import { observeProcess } from "./rex.ts";
+import { checkoutHolds, isRepository } from "./checkout.ts";
 
 const positive = Type.Integer({ minimum: 1 });
 const LimitsFile = Type.Object(
@@ -200,6 +200,7 @@ export async function admissionSnapshot(
       parent: record.parentRunId,
       access: record.access,
       checkout: record.checkoutRoot,
+      repository: isRepository(record.checkoutRoot),
       provider:
         reservation?.members.find((m) => m.runId === record.id)?.provider ??
         record.effective.provider,
@@ -239,7 +240,7 @@ export async function admissionSnapshot(
         launchCallers.some((caller) => caller === id || caller.startsWith(`${id}/`));
       if (
         ancestor.reservation === reservation &&
-        overlaps(ancestor.checkout, run.checkout) &&
+        conflicts(ancestor, run) &&
         record.activity?.tools.some((tool) => tool.name !== "subagent" && !encloses(tool.id))
       )
         run.joining.push(parent);
@@ -367,7 +368,7 @@ export async function writerOnPath(target: string, memberId?: string): Promise<R
     if (memberId) {
       const own = await readRun(memberId);
       const reservation = reservations.find((r) => r.members.some((m) => m.runId === memberId));
-      if (contains(own.checkoutRoot, target) && reservation)
+      if (checkoutHolds(own.checkoutRoot, target) && reservation)
         for (const member of reservation.members)
           if (await isDescendant(member.runId, memberId)) return readRun(member.runId);
     }
@@ -376,7 +377,7 @@ export async function writerOnPath(target: string, memberId?: string): Promise<R
         if (member.runId === memberId || (memberId && (await isDescendant(memberId, member.runId))))
           continue;
         if (
-          contains(member.checkout, target) &&
+          checkoutHolds(member.checkout, target) &&
           (member.access === "write" || (memberId && (await isDescendant(member.runId, memberId))))
         )
           return readRun(member.runId);

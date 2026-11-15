@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,8 +14,10 @@ async function toolCall(
   input: Record<string, unknown>,
   limits?: string,
   launches: Record<string, unknown>[] = [],
+  setup: (dir: string) => void = () => {},
 ) {
   dir = await mkdtemp(join(tmpdir(), "pirs-guard-"));
+  setup(dir);
   vi.stubEnv("PI_SUBAGENTS_STATE_DIR", dir);
   if (limits !== undefined) await writeFile(join(dir, "limits.json"), limits);
   vi.stubEnv("PI_SUBAGENTS_RUN_ID", "");
@@ -74,4 +77,15 @@ it("a top-level read or inspect launch in flight does not refuse the parent's ed
     block: true,
   });
   expect(await toolCall(edit, undefined, [{ task: "change" }])).toMatchObject({ block: true });
+});
+
+it("a writer started outside any repository doesn't refuse edits in a repository beneath it", async () => {
+  const repo = (dir: string) => execFileSync("git", ["init", "-q", join(dir, "repo")]);
+  const launch = [{ task: "research", access: "write" }];
+  expect(
+    await toolCall({ path: "repo/notes.md", oldText: "a", newText: "b" }, undefined, launch, repo),
+  ).toBeUndefined();
+  expect(
+    await toolCall({ path: "notes.md", oldText: "a", newText: "b" }, undefined, launch, repo),
+  ).toMatchObject({ block: true });
 });
