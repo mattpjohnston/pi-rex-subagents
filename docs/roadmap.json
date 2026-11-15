@@ -119,9 +119,7 @@
     {
       "id": "launch-call-record",
       "title": "One record per launch call in index.ts replaces the eight maps",
-      "done": [
-        "No behaviour change; every check and the harness pass"
-      ],
+      "done": ["No behaviour change; every check and the harness pass"],
       "status": "todo",
       "evidence": null,
       "commit": null
@@ -129,9 +127,7 @@
     {
       "id": "activity",
       "title": "One function changes a run's parked and waiting state",
-      "done": [
-        "No behaviour change; every check and the harness pass"
-      ],
+      "done": ["No behaviour change; every check and the harness pass"],
       "status": "todo",
       "evidence": null,
       "commit": null
@@ -150,9 +146,7 @@
     {
       "id": "harness",
       "title": "The full harness suite passes after the last item",
-      "done": [
-        "Every scenario reported PASS on the final commit"
-      ],
+      "done": ["Every scenario reported PASS on the final commit"],
       "status": "todo",
       "evidence": null,
       "commit": null
