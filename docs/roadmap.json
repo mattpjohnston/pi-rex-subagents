@@ -71,9 +71,9 @@
         "When a child exits without loading or claiming, the outcome includes the last lines of its terminal, such as Pi's own error",
         "Unit test fails before the change"
       ],
-      "status": "todo",
-      "evidence": null,
-      "commit": null
+      "status": "done",
+      "evidence": "None",
+      "commit": "ce6964a"
     },
     {
       "id": "read-provider",
@@ -83,8 +83,8 @@
         "Built-in providers still launch",
         "Unit test fails before the change"
       ],
-      "status": "todo",
-      "evidence": null,
+      "status": "done",
+      "evidence": "test/launch.test.ts: with a fake pi that lists only anthropic/claude-opus-5-5 under --no-extensions, a read launch on bridge/claude-opus-5-5 is refused naming anthropic/claude-opus-5-5 and access inspect; a read launch on anthropic and a write launch on bridge are accepted. Failed before (the read launch was accepted). Costs one pi --list-models call (0.15-0.20 s measured) on read launches only. scripts/check.sh all pass, 170 tests.",
       "commit": null
     },
     {

@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { runForeground } from "../src/launch.ts";
+import { prepareRun, runForeground } from "../src/launch.ts";
 import { RexEvents } from "../src/rex.ts";
 import { privateDirectory, runPaths, writeRun, type RunRecord } from "../src/records.ts";
 
@@ -89,3 +89,35 @@ it("a child that exits before it starts reports what its terminal showed", async
     events.stop();
   }
 }, 20_000);
+
+it("a read launch refuses a provider that read subagents can't load, and names one that can", async () => {
+  dir = await mkdtemp(join(tmpdir(), "pirs-read-provider-"));
+  vi.stubEnv("PI_SUBAGENTS_STATE_DIR", dir);
+  vi.stubEnv("REX_SESSION", "s");
+  const pi = join(dir, "pi");
+  // Pi as a read child sees it: no extensions, so no extension-only providers.
+  await writeFile(
+    pi,
+    `#!/bin/sh
+echo 'provider   model            context'
+echo 'anthropic  claude-opus-5-5  1M'
+`,
+    { mode: 0o700 },
+  );
+  vi.stubEnv("PI_SUBAGENTS_PI", pi);
+  const model = (provider: string, id: string) => ({ provider, id, reasoning: true }) as never;
+  const ctx = {
+    cwd: dir,
+    model: undefined,
+    thinkingLevel: "off",
+    modelRegistry: { find: (provider: string, id: string) => model(provider, id) },
+    sessionManager: { getSessionId: () => "parent" },
+  } as never;
+  const launch = (provider: string, access: "read" | "write") =>
+    prepareRun({ task: "look", provider, model: "claude-opus-5-5", access }, ctx);
+  await expect(launch("bridge", "read")).rejects.toThrow(
+    /bridge\/claude-opus-5-5.*read subagents.*anthropic\/claude-opus-5-5/s,
+  );
+  await expect(launch("anthropic", "read")).resolves.toMatchObject({ access: "read" });
+  await expect(launch("bridge", "write")).resolves.toMatchObject({ access: "write" });
+});

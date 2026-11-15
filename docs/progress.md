@@ -45,3 +45,11 @@ Next: wait.
 OpenCode Go's weekly limit ran out during this item (resets around 00:00 on 16 November), so the harness ran on openai/gpt-6-luna. The final suite should use the agreed model once it resets.
 
 Next: placement.
+
+## 2026-11-15 flaky git-read test, read-provider
+
+The git-read clean-filter test failed under load twice. Its control relied on f being racily clean; it now changes f to same-size content with a new timestamp, so git status always runs the filter (bfca5a0). The commit chain also had a bug: a heredoc ended the line, so `git commit` ran even when checks failed. Commits now happen in a separate step after reading the checks.
+
+A read launch now asks `pi --no-extensions --no-mcp --list-models <model>` whether its provider exists for a read child, and refuses with the providers that do (for example anthropic/claude-opus-5-5) or access inspect.
+
+Next: placement.

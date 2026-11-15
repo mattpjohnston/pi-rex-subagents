@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { open, stat, writeFile } from "node:fs/promises";
 import { dirname, delimiter, join, resolve } from "node:path";
@@ -97,6 +98,8 @@ export async function prepareRun(
   const settings = resolveSettings(parent, input, (provider, id) =>
     ctx.modelRegistry.find(provider, id),
   );
+  const access = input.access ?? (parentRun?.access === "inspect" ? "inspect" : "write");
+  if (access === "read") await requireReadProvider(settings.effective);
   const cwd = await workingDirectory(ctx.cwd, input.cwd);
   const root = await checkoutRoot(cwd);
   let continueFrom: RunRecord["continueFrom"] = null;
@@ -132,7 +135,7 @@ export async function prepareRun(
     taskPath: resolve(dirname(paths.run), "task.md"),
     cwd,
     checkoutRoot: root,
-    access: input.access ?? (parentRun?.access === "inspect" ? "inspect" : "write"),
+    access,
     requested: settings.requested,
     effective: settings.effective,
     background: input.background === true,
@@ -164,6 +167,32 @@ export async function prepareRun(
   return run;
 }
 
+/**
+ * A read child starts with --no-extensions, so a provider only an extension registers doesn't
+ * exist there. Ask Pi with the same flags, so the launch fails here with a way forward rather
+ * than in the child's tab.
+ */
+async function requireReadProvider(settings: ModelSettings): Promise<void> {
+  const pi = await executable(process.env.PI_SUBAGENTS_PI ?? "pi");
+  const listed = await new Promise<string>((resolve, reject) => {
+    execFile(
+      pi,
+      ["--no-extensions", "--no-mcp", "--list-models", settings.model],
+      { encoding: "utf8", timeout: 15_000, maxBuffer: 1024 * 1024 },
+      (error, stdout) => (error ? reject(error) : resolve(stdout)),
+    );
+  });
+  const rows = listed.split("\n").map((line) => line.trim().split(/\s+/));
+  const providers = rows.filter((row) => row[1] === settings.model).map((row) => row[0]);
+  if (providers.includes(settings.provider)) return;
+  const alternatives = providers.map((provider) => `${provider}/${settings.model}`);
+  throw new Error(
+    `${settings.provider}/${settings.model} isn't available to read subagents, which start without extensions, so a provider an extension adds doesn't exist there. ` +
+      (alternatives.length
+        ? `Use ${alternatives.join(" or ")}, or access "inspect".`
+        : `Use a built-in provider, or access "inspect".`),
+  );
+}
 export async function childArgv(run: RunRecord, entry: string): Promise<string[]> {
   const env = [`PI_SUBAGENTS_RUN_DIR=${dirname(run.paths.run)}`, `PI_SUBAGENTS_RUN_ID=${run.id}`];
   for (const key of [

@@ -78,7 +78,7 @@ Rex's `done` status is only display. The parent follows exits and status through
 
 ## Access modes
 
-`read` starts Pi with `--no-extensions --no-mcp --tools read,grep,find,ls,git_read`, plus this extension. `--tools` alone isn't enough, because MCP tools stay callable without `--no-mcp`. At every session start, including after `/reload`, the subagent checks its active and loadable tools, and fails the run before the model does anything if it finds a tool outside those five.
+`read` starts Pi with `--no-extensions --no-mcp --tools read,grep,find,ls,git_read`, plus this extension. So a provider that an extension adds, such as `claude-bridge`, doesn't exist in a `read` subagent. The launch asks Pi with the same flags whether the model is there, and refuses with the providers that have it, or suggests `inspect`. `--tools` alone isn't enough, because MCP tools stay callable without `--no-mcp`. At every session start, including after `/reload`, the subagent checks its active and loadable tools, and fails the run before the model does anything if it finds a tool outside those five.
 
 `git_read` runs Git with an argument list and no shell. It allows `log`, `show`, `blame`, `diff`, `ls-files`, `rev-parse`, `status`, `shortlog`, and `grep`. It refuses options that write files or run commands, including abbreviated long options and `-O` bundled with other short options. A repository's own config can also make Git run commands, so `git_read`:
 
