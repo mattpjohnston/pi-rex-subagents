@@ -23,7 +23,7 @@
         "Unit test fails before the change"
       ],
       "status": "done",
-      "evidence": "test/terminals.test.ts: release after confirmation removes the reservation member and records releasedAt with the process exited; declining changes nothing; a known tab, a live process, and a takeover are each refused with the reason. Four of the five failed before the change; the decline case passes either way. scripts/check.sh all pass, 164 tests.",
+      "evidence": "Corrected after an Opus review found 70cfd1f released runs still admitting or starting and recorded no 'who'. test/terminals.test.ts: release after confirmation removes the member and records released {at, by} with the process exited, and an older write keeps it; declining changes nothing; a known tab, a live process, a takeover, a launch still starting, and a launch still queued are each refused. The new cases failed on 70cfd1f. scripts/check.sh all pass, 172 tests.",
       "commit": "70cfd1f"
     },
     {

@@ -94,7 +94,7 @@ export function registerSubagentsCommand(
           `Rex never confirmed a tab for run ${selected.id}, so the extension can't tell whether its process exists. Release it only if you're sure nothing is running for it: its reservation on ${selected.checkoutRoot} is dropped and other writers may start there.`,
         );
         if (!confirmed) return;
-        const late = await releaseRun(selected.id);
+        const late = await releaseRun(selected.id, ctx.sessionManager.getSessionId());
         ctx.ui.notify(
           late ? `Release refused: ${late}` : `Released ${selected.label}; its reservation is gone`,
           late ? "warning" : "info",

@@ -329,8 +329,11 @@ test("release frees an uncertain launch's reservation after a confirmation, and 
   expect(await members()).toEqual([]);
   expect(await readRun(run.id)).toMatchObject({
     process: { state: "exited", code: null },
-    releasedAt: expect.any(Number),
+    released: { at: expect.any(Number), by: "parent" },
   });
+  // A write from an older copy keeps the release.
+  await writeRun(run);
+  expect((await readRun(run.id)).released?.by).toBe("parent");
   expect(notifications.join("\n")).toContain("Released");
 });
 
@@ -349,6 +352,14 @@ test.each([
     { lifecycle: "starting", finishedAt: null, process: { state: "live", pid: 4242 } },
   ],
   ["a takeover", { lifecycle: "taken_over" }],
+  [
+    "a launch still starting",
+    { lifecycle: "starting", finishedAt: null, process: { state: "unknown" } },
+  ],
+  [
+    "a launch still queued",
+    { lifecycle: "admitting", finishedAt: null, process: { state: "unknown" } },
+  ],
 ] as const)("release refuses a run with %s", async (_case, change) => {
   const run = await uncertain("d".repeat(24), change as Partial<RunRecord>);
   const { command, notifications } = await parent();
