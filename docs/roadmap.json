@@ -1,0 +1,155 @@
+{
+  "about": "Work approved on 2026-11-15. One item per commit. Change only status, evidence, and commit; never delete or reword an item to make it pass. An item passes only when every check in done has been run and observed.",
+  "items": [
+    {
+      "id": "home-checkout",
+      "title": "A child started outside any repository doesn't reserve every repository under it",
+      "done": [
+        "A writer whose cwd is not inside a git repository (for example the home directory) no longer blocks writers in repositories beneath it, or the parent's edits there",
+        "Writers in the same non-repository directory still exclude each other",
+        "Unit test fails before the change"
+      ],
+      "status": "todo",
+      "evidence": null,
+      "commit": null
+    },
+    {
+      "id": "release",
+      "title": "/subagents release <run> frees the reservation of an uncertain launch",
+      "done": [
+        "A run with no Rex tab and an unresolved process can be released after a confirmation, and its reservation member is gone",
+        "A run with a Rex tab, a live process, or a taken-over claim is refused, with the reason",
+        "The record says who released it and when",
+        "Unit test fails before the change"
+      ],
+      "status": "todo",
+      "evidence": null,
+      "commit": null
+    },
+    {
+      "id": "lost-message",
+      "title": "An accepted message is never stranded as sent but unconsumed",
+      "done": [
+        "models/protocol.py gains the failure (the send fails after the sent mark), the old rule fails it, and the new rule passes",
+        "A message whose send throws is sent again at the next drain",
+        "A sent message still unconsumed after a reporter reload is sent again",
+        "Unit test fails before the change"
+      ],
+      "status": "todo",
+      "evidence": null,
+      "commit": null
+    },
+    {
+      "id": "nested-git",
+      "title": "Inspect reports changes inside a nested repository when the root is not a repository",
+      "done": [
+        "Changing a nested repository's config, a hook, a ref, or HEAD reports changed with that path",
+        "Object stores are not hashed",
+        "Unit test fails before the change"
+      ],
+      "status": "todo",
+      "evidence": null,
+      "commit": null
+    },
+    {
+      "id": "wait",
+      "title": "subagent_control wait returns when the named runs have outcomes",
+      "done": [
+        "Waits for every named run the parent owns, or until a timeout, and reports each outcome capped like a result",
+        "An abort ends the wait without cancelling the runs",
+        "A background run reported by wait is not delivered again",
+        "Unit test and a harness scenario assertion"
+      ],
+      "status": "todo",
+      "evidence": null,
+      "commit": null
+    },
+    {
+      "id": "placement",
+      "title": "placement: tab, float, or detached",
+      "done": [
+        "float opens the child as a floating layer in the parent's window; detached keeps it running outside any window",
+        "Waiting, /subagents go, cancel, dismiss and auto-close still find the child by block ID",
+        "tab stays the default and unchanged",
+        "Harness scenario"
+      ],
+      "status": "todo",
+      "evidence": null,
+      "commit": null
+    },
+    {
+      "id": "worktree",
+      "title": "worktree: true runs a writer in its own git worktree",
+      "done": [
+        "Creates <repo-parent>/<repo>.worktrees/<label>-<id> on a new branch subagent/<label>-<id> from the checkout's HEAD, and runs the child there",
+        "Two worktree writers on one repository run at once",
+        "The result names the worktree and branch",
+        "A worktree is removed only when it is clean and its branch has no commits missing from another branch; otherwise it is kept and listed",
+        "Harness scenario"
+      ],
+      "status": "todo",
+      "evidence": null,
+      "commit": null
+    },
+    {
+      "id": "dialog-answer",
+      "title": "The parent can read and answer a child's dialog",
+      "done": [
+        "subagent_control screen returns the child's screen, bounded",
+        "subagent_control answer sends keys or text only while the named wait is still open, and reports whether it ended",
+        "A stale wait is refused without sending anything",
+        "Harness scenario with a real dialog"
+      ],
+      "status": "todo",
+      "evidence": null,
+      "commit": null
+    },
+    {
+      "id": "polling",
+      "title": "Rex is polled only when its event stream goes quiet",
+      "done": [
+        "Measured first: how often the stream misses an exit or status change",
+        "Rex calls per minute for a live child, before and after",
+        "No harness scenario regresses"
+      ],
+      "status": "todo",
+      "evidence": null,
+      "commit": null
+    },
+    {
+      "id": "launch-call-record",
+      "title": "One record per launch call in index.ts replaces the eight maps",
+      "done": ["No behaviour change; every check and the harness pass"],
+      "status": "todo",
+      "evidence": null,
+      "commit": null
+    },
+    {
+      "id": "activity",
+      "title": "One function changes a run's parked and waiting state",
+      "done": ["No behaviour change; every check and the harness pass"],
+      "status": "todo",
+      "evidence": null,
+      "commit": null
+    },
+    {
+      "id": "launch-test",
+      "title": "A fake-Rex unit test drives a whole launch, and git-heavy tests have explicit timeouts",
+      "done": [
+        "The test reaches rex window new and a result",
+        "Git-heavy tests state a timeout sized to their work"
+      ],
+      "status": "todo",
+      "evidence": null,
+      "commit": null
+    },
+    {
+      "id": "harness",
+      "title": "The full harness suite passes after the last item",
+      "done": ["Every scenario reported PASS on the final commit"],
+      "status": "todo",
+      "evidence": null,
+      "commit": null
+    }
+  ]
+}
