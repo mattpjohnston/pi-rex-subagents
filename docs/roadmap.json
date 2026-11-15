@@ -65,6 +65,29 @@
       "commit": null
     },
     {
+      "id": "startup-diagnostic",
+      "title": "A child that dies before starting says why",
+      "done": [
+        "When a child exits without loading or claiming, the outcome includes the last lines of its terminal, such as Pi's own error",
+        "Unit test fails before the change"
+      ],
+      "status": "todo",
+      "evidence": null,
+      "commit": null
+    },
+    {
+      "id": "read-provider",
+      "title": "A read launch refuses a provider that only an extension provides",
+      "done": [
+        "Launching access read with a provider registered by an extension, such as claude-bridge, is refused at launch with the reason and the alternative",
+        "Built-in providers still launch",
+        "Unit test fails before the change"
+      ],
+      "status": "todo",
+      "evidence": null,
+      "commit": null
+    },
+    {
       "id": "placement",
       "title": "placement: tab, float, or detached",
       "done": [

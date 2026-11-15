@@ -43,6 +43,7 @@ import {
   observeProcess,
   requireLocalRex,
   rexJson,
+  screenTail,
   type BlockEvent,
   RexEvents,
 } from "./rex.ts";
@@ -454,6 +455,12 @@ async function savedBefore(run: RunRecord): Promise<Fingerprint | undefined> {
   }
   return undefined;
 }
+/** Pi prints why it couldn't start, such as an unknown model, on screen and nowhere else. */
+async function startupFailure(run: RunRecord, what: string): Promise<string> {
+  const where = run.location ?? run.rex;
+  const screen = where ? await screenTail(where) : null;
+  return `${what}. Events: ${run.paths.events}${screen ? `\nLast lines of its terminal:\n${screen}` : ""}`;
+}
 /** Written and synced before Rex is asked for a tab, so its absence proves Rex never was. */
 const launchMarker = (run: RunRecord) => join(dirname(run.paths.run), "rex-launch");
 async function mayHaveAskedRex(run: RunRecord): Promise<boolean> {
@@ -737,12 +744,18 @@ async function watch(
         break;
       }
       if (!winner && run.process.state === "exited") {
-        run.diagnostic = `Startup or reporter failure: child exited without a result claim. Events: ${run.paths.events}`;
+        run.diagnostic = await startupFailure(
+          run,
+          "Startup or reporter failure: child exited without a result claim",
+        );
         transition(run, "failed");
         break;
       }
       if (!run.loadedAt && Date.now() >= startupDeadline) {
-        run.diagnostic = `Startup deadline exceeded; reporter did not load. Events: ${run.paths.events}`;
+        run.diagnostic = await startupFailure(
+          run,
+          "Startup deadline exceeded; reporter did not load",
+        );
         await cancel(run);
         const deadline = Date.now() + CANCELLATION_MS;
         while (run.process.state !== "exited" && Date.now() < deadline) {

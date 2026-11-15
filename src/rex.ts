@@ -193,3 +193,23 @@ export async function closeBlock(location: Location): Promise<void> {
   if (reply.code !== 0 && reply.code !== 3)
     throw new Error(`Rex block close exit ${reply.code}: ${reply.stderr}`);
 }
+
+/** The last lines a terminal shows, for explaining a child that died before it started. */
+export async function screenTail(location: Location, lines = 15): Promise<string | null> {
+  try {
+    const reply = await command([
+      "capture",
+      "-s",
+      location.sessionId,
+      "-b",
+      location.blockId,
+      "--trim",
+      "--unwrap",
+    ]);
+    if (reply.code !== 0) return null;
+    const shown = reply.stdout.trimEnd().split("\n").slice(-lines).join("\n").trim();
+    return shown ? shown.slice(-2000) : null;
+  } catch {
+    return null;
+  }
+}
