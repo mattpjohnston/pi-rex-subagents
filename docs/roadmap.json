@@ -37,7 +37,7 @@
       ],
       "status": "done",
       "evidence": "models/protocol.py: new transition 'Pi drops a queued message' and a check that every state finishes without outside help; nov14 (old rule) fails with 'reporter accepts m0 and steers -> Pi drops m0' stuck, current passes over 600 states. test/inbox.test.ts: TypeScript matches all 600 model states including 20 lost-message resends. test/reporter-poll.test.ts: a message sent before settlement and never consumed is sent again; failed before (0 sends), passes after (1). The reload case is the same rule: any sent, unconsumed message older than the latest settlement is resent. scripts/check.sh all pass, 165 tests.",
-      "commit": null
+      "commit": "5db82b5"
     },
     {
       "id": "nested-git",
@@ -47,8 +47,8 @@
         "Object stores are not hashed",
         "Unit test fails before the change"
       ],
-      "status": "todo",
-      "evidence": null,
+      "status": "done",
+      "evidence": "test/fingerprint.test.ts: in a plain-directory root, changing a nested repository's config, a hook, a branch ref, and HEAD each report changed with that path; no fingerprint key is under .git/objects. Failed before (reported clean), passes after. scripts/check.sh all pass, 166 tests.",
       "commit": null
     },
     {

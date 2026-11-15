@@ -167,3 +167,32 @@ it("sees a change to one stage of a conflicted path", async () => {
   const after = ok(await captureFingerprint(root));
   expect(compareFingerprints(before, after)).toMatchObject({ state: "changed", paths: ["f"] });
 });
+
+it("sees changes inside a nested repository's .git, but not its object store", async () => {
+  const root = await scratch();
+  const nested = join(root, "project");
+  execFileSync("git", ["init", "-q", nested]);
+  execFileSync("git", ["-C", nested, "config", "user.email", "probe@example.com"]);
+  execFileSync("git", ["-C", nested, "config", "user.name", "Probe"]);
+  await writeFile(join(nested, "f"), "hi\n");
+  execFileSync("git", ["-C", nested, "add", "f"]);
+  execFileSync("git", ["-C", nested, "commit", "-qm", "init"]);
+  const before = ok(await captureFingerprint(root));
+  expect(before.kind).toBe("dir");
+  expect(Object.keys(before.files).some((path) => path.includes(".git/objects"))).toBe(false);
+  const changes: [string, () => unknown][] = [
+    ["project/.git/config", () => execFileSync("git", ["-C", nested, "config", "core.pager", "x"])],
+    ["project/.git/hooks/pre-commit", () => writeFile(join(nested, ".git/hooks/pre-commit"), "x")],
+    ["project/.git/refs/heads/side", () => execFileSync("git", ["-C", nested, "branch", "side"])],
+    ["project/.git/HEAD", () => execFileSync("git", ["-C", nested, "checkout", "-q", "side"])],
+  ];
+  let previous = before;
+  for (const [path, change] of changes) {
+    await change();
+    const after = ok(await captureFingerprint(root));
+    const report = compareFingerprints(previous, after);
+    expect([path, report.state]).toEqual([path, "changed"]);
+    expect(report.paths).toContain(path);
+    previous = after;
+  }
+});

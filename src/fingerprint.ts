@@ -127,6 +127,10 @@ async function hashTree(
   budget: Budget,
 ): Promise<Record<string, string> | FingerprintUnknown> {
   const files: Record<string, string> = {};
+  // The root's own .git is captured through git; a nested repository's .git is walked here,
+  // except its object store, which only grows and whose effects show in refs and the index.
+  const skipped = (rel: string, name: string) =>
+    (rel === "" && name === ".git") || (rel.split("/").at(-1) === ".git" && name === "objects");
   const walk = async (dir: string, rel: string): Promise<FingerprintUnknown | null> => {
     if (budget.expired()) return unknown(budget.reason ?? "fingerprint budget exceeded");
     let entries;
@@ -136,7 +140,7 @@ async function hashTree(
       return unknown(error instanceof Error ? error.message : String(error));
     }
     for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-      if (entry.name === ".git") continue;
+      if (skipped(rel, entry.name)) continue;
       const child = join(dir, entry.name);
       const childRel = rel ? `${rel}/${entry.name}` : entry.name;
       const stat = await lstat(child);

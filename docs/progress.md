@@ -31,3 +31,9 @@ Next: lost-message.
 Pi settles only after running what it queued, so a message marked sent before the latest settlement and still unconsumed was dropped. The reporter now marks such messages `lost` and settlement sends them again; it used to wait for them forever. The protocol model gained a "Pi drops a queued message" step and a check that every state can finish without someone stepping in; the old rule (`nov14`) fails it and the current rule passes. The roadmap's "after a reporter reload" case is covered by the same rule rather than a separate reload hook. Duplicates are possible in a same-millisecond race and accepted.
 
 Next: nested-git.
+
+## 2026-11-15 nested-git
+
+The inspect fingerprint skipped every `.git`. It now skips only the root's own `.git`, which git metadata already covers, and walks any nested `.git` except its object store. This fixes a plain-directory root and also a nested repository inside a repository. A `.git` file (worktree or submodule pointer) is hashed like any file.
+
+Next: wait.

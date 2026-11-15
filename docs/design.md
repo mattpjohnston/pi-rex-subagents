@@ -93,6 +93,8 @@ Each rule has a test that plants a command in a real repository and checks it do
 - In a Git repository: HEAD, every ref, the staged entries (every stage of a conflicted path) and index flags, the repository's config, hooks, and `info/` files, and a hash of every file under the root, including untracked and ignored files.
 - Anywhere else: a hash of every file under the directory.
 
+Either way, a repository nested below the root has its `.git` hashed too, except the object store, so a changed config, hook, ref, index or `HEAD` there is reported.
+
 The result says `clean`, `changed` with the changed paths, or `unknown` if the size or time limit ran out. This never changes whether the run succeeded. The hashes are of file contents because HEAD plus `git status` misses writes to ignored files, `skip-worktree` edits, and new refs. They can't see writes outside the repository or changes undone before the subagent exits.
 
 `write` is the normal Pi setup.
