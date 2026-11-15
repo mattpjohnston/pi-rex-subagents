@@ -11,7 +11,7 @@
       ],
       "status": "done",
       "evidence": "models: home and repository writers hold at once under the current rule and never under the old one; a writer in a plain directory under home still waits; 20,000-tree sweep with plain-directory roots all OK. test/admission.test.ts agreement with the model fails before (dir cases) and passes after. test/guard.test.ts: an edit in a repository under a plain-directory writer was refused before, allowed after; an edit in the plain directory itself is still refused. scripts/check.sh all pass, 159 tests.",
-      "commit": null
+      "commit": "e8a7a38"
     },
     {
       "id": "release",
@@ -22,8 +22,8 @@
         "The record says who released it and when",
         "Unit test fails before the change"
       ],
-      "status": "todo",
-      "evidence": null,
+      "status": "done",
+      "evidence": "test/terminals.test.ts: release after confirmation removes the reservation member and records releasedAt with the process exited; declining changes nothing; a known tab, a live process, and a takeover are each refused with the reason. Four of the five failed before the change; the decline case passes either way. scripts/check.sh all pass, 164 tests.",
       "commit": null
     },
     {
@@ -119,7 +119,9 @@
     {
       "id": "launch-call-record",
       "title": "One record per launch call in index.ts replaces the eight maps",
-      "done": ["No behaviour change; every check and the harness pass"],
+      "done": [
+        "No behaviour change; every check and the harness pass"
+      ],
       "status": "todo",
       "evidence": null,
       "commit": null
@@ -127,7 +129,9 @@
     {
       "id": "activity",
       "title": "One function changes a run's parked and waiting state",
-      "done": ["No behaviour change; every check and the harness pass"],
+      "done": [
+        "No behaviour change; every check and the harness pass"
+      ],
       "status": "todo",
       "evidence": null,
       "commit": null
@@ -146,7 +150,9 @@
     {
       "id": "harness",
       "title": "The full harness suite passes after the last item",
-      "done": ["Every scenario reported PASS on the final commit"],
+      "done": [
+        "Every scenario reported PASS on the final commit"
+      ],
       "status": "todo",
       "evidence": null,
       "commit": null

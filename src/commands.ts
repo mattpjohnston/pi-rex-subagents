@@ -5,6 +5,8 @@ import { shouldAppend, type TransitionView } from "./delivery.ts";
 import { isTerminal, listRuns, type RunRecord } from "./records.ts";
 import { locate, object, rexJson } from "./rex.ts";
 import { cappedText } from "./results.ts";
+import { releaseRefusal, releaseRun } from "./admission.ts";
+import { readClaim } from "./claims.ts";
 import { clearEligible, dismiss, keep, lastKnownTab } from "./terminals.ts";
 
 export const live = (run: RunRecord) =>
@@ -30,7 +32,7 @@ export function registerSubagentsCommand(
 ): void {
   pi.registerCommand("subagents", {
     description:
-      "List this parent's runs; all lists every live child; go <label> selects its tab; go next selects the oldest wait across parents; cancel <label|run-id> cancels a background run; keep <label|run-id> pins its tab open",
+      "List this parent's runs; all lists every live child; go <label> selects its tab; go next selects the oldest wait across parents; cancel <label|run-id> cancels a background run; release <label|run-id> frees an uncertain launch; keep <label|run-id> pins its tab open",
     handler: async (args, ctx) => {
       const all = treeOrder(await listRuns());
       const owned = ownedRuns(all, ctx.sessionManager.getSessionId());
@@ -72,6 +74,32 @@ export function registerSubagentsCommand(
         }
         await keep(selected);
         ctx.ui.notify(`Keeping ${selected.label}'s tab; /subagents dismiss closes it`, "info");
+        return;
+      }
+      if (args.startsWith("release ")) {
+        const target = args.slice("release ".length).trim();
+        const matches = all.filter((run) => run.id === target || run.label === target);
+        const selected = matches.length === 1 ? matches[0] : undefined;
+        if (!selected) {
+          ctx.ui.notify("Release requires exactly one run label or ID", "error");
+          return;
+        }
+        const refusal = releaseRefusal(selected, await readClaim(selected.paths.claim));
+        if (refusal) {
+          ctx.ui.notify(`Release refused: ${refusal}`, "warning");
+          return;
+        }
+        const confirmed = await ctx.ui.confirm(
+          `Release ${selected.label}?`,
+          `Rex never confirmed a tab for run ${selected.id}, so the extension can't tell whether its process exists. Release it only if you're sure nothing is running for it: its reservation on ${selected.checkoutRoot} is dropped and other writers may start there.`,
+        );
+        if (!confirmed) return;
+        const late = await releaseRun(selected.id);
+        ctx.ui.notify(
+          late ? `Release refused: ${late}` : `Released ${selected.label}; its reservation is gone`,
+          late ? "warning" : "info",
+        );
+        await refresh(ctx);
         return;
       }
       if (args.startsWith("cancel ")) {
@@ -139,7 +167,7 @@ export function registerSubagentsCommand(
       }
       if (args && args !== "all") {
         ctx.ui.notify(
-          "Usage: /subagents [all | go <label|next> | cancel <label|run-id> | keep <label|run-id> | clear | dismiss <label|run-id>]",
+          "Usage: /subagents [all | go <label|next> | cancel <label|run-id> | release <label|run-id> | keep <label|run-id> | clear | dismiss <label|run-id>]",
           "error",
         );
         return;

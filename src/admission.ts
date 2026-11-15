@@ -136,6 +136,30 @@ export async function removeRunAdmission(runId: string): Promise<void> {
     else await unlink(pathForReservation(reservation.id));
   }
 }
+/** Why a run can't be released by hand, or null. Only an uncertain launch can be. */
+export function releaseRefusal(run: RunRecord, claim: string | null): string | null {
+  if (claim === "taken_over") return "it was taken over";
+  if (run.rex) return "it has a Rex tab; cancel or dismiss it instead";
+  if (run.process.state === "live") return "its process is live";
+  if (run.process.state === "exited") return "its process already exited, so it holds nothing";
+  return null;
+}
+/**
+ * A person's word that an uncertain launch has no process: its reservation and ticket go, and
+ * the record says when. Rechecked under the lock, since the launcher may have resolved it.
+ */
+export async function releaseRun(id: string): Promise<string | null> {
+  return withAdmissionLock(async () => {
+    const run = await readRun(id);
+    const refusal = releaseRefusal(run, await readClaim(run.paths.claim));
+    if (refusal) return refusal;
+    await removeRunAdmission(id);
+    run.process = { state: "exited", code: null };
+    run.releasedAt = Date.now();
+    await writeRun(run);
+    return null;
+  });
+}
 export async function updateMemberProvider(runId: string, provider: string): Promise<void> {
   await withAdmissionLock(async () => {
     for (const reservation of await readReservations()) {

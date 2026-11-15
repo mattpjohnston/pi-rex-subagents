@@ -3,7 +3,15 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { privateDirectory, readRun, runPaths, writeRun, type RunRecord } from "../src/records.ts";
+import { readReservations } from "../src/admission.ts";
+import {
+  atomicWrite,
+  privateDirectory,
+  readRun,
+  runPaths,
+  writeRun,
+  type RunRecord,
+} from "../src/records.ts";
 import { clearEligible, dismiss } from "../src/terminals.ts";
 import { controlList } from "../src/control.ts";
 
@@ -100,7 +108,7 @@ test("a gone completed tab is persisted as closed and never queried again after 
   expect(await calls()).toEqual(before);
 });
 
-async function parent() {
+async function parent(confirmed = true) {
   let tick: (() => void) | undefined;
   vi.stubGlobal("setInterval", (callback: () => void) => {
     tick = callback;
@@ -147,6 +155,7 @@ async function parent() {
       notify: (text: string) => {
         notifications.push(text);
       },
+      confirm: async () => confirmed,
     },
   };
   const extension = (await import("../src/index.ts")) as {
@@ -165,7 +174,13 @@ async function parent() {
     await done;
     return (await calls()).slice(before);
   };
-  return { refresh, list: () => commands.get("subagents")?.("", ctx), notifications, widgets };
+  return {
+    refresh,
+    list: () => commands.get("subagents")?.("", ctx),
+    command: (args: string) => commands.get("subagents")?.(args, ctx),
+    notifications,
+    widgets,
+  };
 }
 
 test("one refresh checks an open exited tab only once", async () => {
@@ -281,4 +296,63 @@ test("subagent_control list doesn't ask Rex about a tab Rex already closed", asy
   const listed = await controlList([closed]);
   expect(await calls()).toEqual(before);
   expect(listed.runs[0]).toMatchObject({ location: null, process: { state: "exited" } });
+});
+
+async function uncertain(id: string, change: Partial<RunRecord> = {}): Promise<RunRecord> {
+  const run = await record("unused", id);
+  Object.assign(run, {
+    label: `uncertain-${id.slice(0, 1)}`,
+    rex: null,
+    location: null,
+    lifecycle: "cancelled",
+    process: { state: "unresolved", pid: null },
+    ...change,
+  });
+  // record() saved it completed and exited, which writeRun keeps; start the file again.
+  await rm(run.paths.run);
+  await writeRun(run);
+  await writeFile(run.paths.claim, change.lifecycle === "taken_over" ? "taken_over" : "cancelled");
+  await privateDirectory(join(dir, "reservations"));
+  await atomicWrite(join(dir, "reservations", `${id}.json`), {
+    id,
+    members: [{ runId: id, access: "write", checkout: dir, provider: "test" }],
+  });
+  return run;
+}
+const members = async () =>
+  (await readReservations()).flatMap((r) => r.members.map((m) => m.runId));
+
+test("release frees an uncertain launch's reservation after a confirmation, and records it", async () => {
+  const run = await uncertain("b".repeat(24));
+  const { command, notifications } = await parent();
+  await command(`release ${run.label}`);
+  expect(await members()).toEqual([]);
+  expect(await readRun(run.id)).toMatchObject({
+    process: { state: "exited", code: null },
+    releasedAt: expect.any(Number),
+  });
+  expect(notifications.join("\n")).toContain("Released");
+});
+
+test("release does nothing when the person declines", async () => {
+  const run = await uncertain("c".repeat(24));
+  const { command } = await parent(false);
+  await command(`release ${run.id}`);
+  expect(await members()).toEqual([run.id]);
+  expect((await readRun(run.id)).process.state).toBe("unresolved");
+});
+
+test.each([
+  ["a known tab", { rex: { sessionId: "s", windowId: "w", blockId: "open" } }],
+  [
+    "a live process",
+    { lifecycle: "starting", finishedAt: null, process: { state: "live", pid: 4242 } },
+  ],
+  ["a takeover", { lifecycle: "taken_over" }],
+] as const)("release refuses a run with %s", async (_case, change) => {
+  const run = await uncertain("d".repeat(24), change as Partial<RunRecord>);
+  const { command, notifications } = await parent();
+  await command(`release ${run.id}`);
+  expect(await members()).toEqual([run.id]);
+  expect(notifications.join("\n")).toMatch(/Release refused/);
 });

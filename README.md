@@ -70,6 +70,7 @@ Ask subagents for a short final report, and to put anything long in a file. The 
 - `/subagents go <label>` switches Rex to that subagent's tab.
 - `/subagents go next` switches to the subagent that has waited longest for you.
 - `/subagents cancel <label>` cancels a background subagent.
+- `/subagents release <label>` frees the repository of a subagent whose launch is uncertain, after you confirm nothing is running for it. That happens when Pi stops between asking Rex for a tab and saving Rex's reply.
 - `/subagents keep <label>` stops a tab from closing automatically.
 - `/subagents clear` closes the tabs of finished subagents.
 - `/subagents dismiss <label>` closes one finished subagent's tab.

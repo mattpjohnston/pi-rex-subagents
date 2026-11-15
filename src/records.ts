@@ -143,6 +143,7 @@ export const RunRecord = Type.Object(
     finishedAt: Type.Union([Type.Number(), Type.Null()]),
     tabClosedAt: Type.Optional(Type.Number()),
     deliveredAt: Type.Optional(Type.Number()),
+    releasedAt: Type.Optional(Type.Number()),
   },
   object,
 );

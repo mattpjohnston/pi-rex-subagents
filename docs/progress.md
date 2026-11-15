@@ -19,3 +19,9 @@ Next: home-checkout.
 A plain directory (not inside any git repository) no longer conflicts with repositories inside it, in admission and in the parent's edit guard. Plain directories still conflict with each other and with plain directories inside them. The admission model changed first: its new check shows the home and repository writers never hold at once under the old rule and do under the new one, and the random sweep now includes plain-directory roots. Admission uses `conflicts()` in admission-core.ts; the guard uses `checkoutHolds()` in checkout.ts, which looks for a `.git` between the plain directory and the target.
 
 Next: release.
+
+## 2026-11-15 release
+
+`/subagents release <label|run-id>` frees an uncertain launch: no Rex tab recorded and the process unresolved or unknown. It asks the person to confirm nothing is running, rechecks under the admission lock, drops the reservation and ticket, and records `releasedAt` with the process exited. It refuses a known tab, a live process, a takeover, or an already-exited process. `releaseRefusal()` and `releaseRun()` are in admission.ts.
+
+Next: lost-message.
