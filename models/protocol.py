@@ -2,17 +2,20 @@
 
 RULES="current" follows ../docs/design.md. RULES="e19" is the first E19 correction,
 whose settlement checked descendant outcomes but not accepted messages, and whose reporter
-stayed alive under any claim it did not write.
+stayed alive under any claim it did not write. RULES="nov14" is the rule before 15 November
+2026, whose settlement waited for every sent message, even one Pi had dropped.
 
 Invariants:
 - A run whose claim is `result` consumed every message the parent was told was accepted.
 - No message is accepted after a claim exists.
-- A `cancelled` run's process exits. Nothing ends in a stuck state.
+- A `cancelled` run's process exits. Nothing ends in a stuck state, and every state can still
+  reach the process exiting or a human owning it.
 """
 import itertools, sys
 from collections import deque
 
 MSGS = 2
+OPTIONAL = ("parent writes", "parent claims cancelled", "parent crashes", "human takes over")
 
 
 def initial():
@@ -61,6 +64,9 @@ def successors(state, rules):
                 emit(f"reporter accepts m{i} and prompts", msgs=setm(i, "sent"), piq=piq + (i,), child="working")
         else:
             emit(f"reporter refuses m{i}", msgs=setm(i, "refused"))
+    # Pi can lose a queued message, for example when a send throws or a reload drops its queue.
+    for i in piq:
+        emit(f"Pi drops m{i}", piq=tuple(j for j in piq if j != i))
     # Pi consumes queued messages while a turn runs.
     if child == "working" and piq:
         i = piq[0]
@@ -75,11 +81,15 @@ def successors(state, rules):
     # The settlement owner decides under the lock.
     if child == "settling" and lock is None:
         unconsumed = [i for i in range(MSGS) if msgs[i] == "sent"]
-        if claim == "cancelled" and rules == "current":
+        if claim == "cancelled" and rules in ("current", "nov14"):
             emit("reporter sees cancelled and exits", child="exited")
         elif claim is not None:
             emit("reporter sees claim and stays idle", child="idle")
-        elif unconsumed and rules == "current":
+        elif unconsumed and rules == "current" and any(i not in piq for i in unconsumed):
+            # Pi settles only after running what it queued, so a sent message it no longer holds was lost.
+            lost = [i for i in unconsumed if i not in piq]
+            emit(f"settlement sends lost m{lost[0]} again", child="working", piq=piq + tuple(lost))
+        elif unconsumed and rules in ("current", "nov14"):
             emit("settlement waits for accepted messages", child="working")
         else:
             emit("reporter claims result and shuts down", claim="result", child="shutdown", lock=None)
@@ -121,6 +131,25 @@ def check(rules):
             if ns not in seen:
                 seen[ns] = (st, label)
                 q.append(ns)
+    # A state that can't reach the process exiting or a human owning it on its own is stuck too,
+    # even if it keeps moving, such as settling and waiting forever for a message Pi dropped.
+    # Optional outside actions (a new message, a cancel, a crash, a takeover) don't count as a
+    # way out: the run must not need someone to step in.
+    if "STUCK" not in found:
+        back, done = {}, deque(st for st in seen if st[2] in ("exited", "human"))
+        for st in seen:
+            for ns, label in successors(st, rules):
+                if not label.startswith(OPTIONAL):
+                    back.setdefault(ns, []).append(st)
+        live = set(done)
+        while done:
+            for prev in back.get(done.popleft(), []):
+                if prev not in live:
+                    live.add(prev)
+                    done.append(prev)
+        dead = next((st for st in seen if st not in live), None)
+        if dead is not None:
+            found["STUCK"] = (dead, trace(seen, dead))
     return found, len(seen)
 
 
@@ -134,7 +163,7 @@ def trace(seen, st):
 
 if __name__ == "__main__":
     failed = 0
-    for rules, want in (("e19", {"UNSAFE", "STUCK"}), ("current", set())):
+    for rules, want in (("e19", {"UNSAFE", "STUCK"}), ("nov14", {"STUCK"}), ("current", set())):
         found, n = check(rules)
         ok = set(found) == want
         failed += not ok

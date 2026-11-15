@@ -1,7 +1,18 @@
 import type { Claim } from "./claims.ts";
 
-/** `accepted` is the durable interval before dispatch; the oracle folds it into `sent`. */
-export type MessageState = "none" | "written" | "accepted" | "sent" | "consumed" | "refused";
+/**
+ * `accepted` is the durable interval before dispatch; the oracle folds it into `sent`. `lost`
+ * is a message sent before this settlement began and never consumed: Pi settles only after
+ * running what it queued, so it dropped the message, and settlement sends it again.
+ */
+export type MessageState =
+  | "none"
+  | "written"
+  | "accepted"
+  | "sent"
+  | "lost"
+  | "consumed"
+  | "refused";
 export interface ProtocolSnapshot {
   claim: Claim | null;
   lock: "parent" | null;
@@ -22,7 +33,8 @@ export function settlementDecision(s: ProtocolSnapshot): SettlementAction {
   if (s.lock || s.child !== "settling") return "none";
   if (s.claim === "cancelled" || s.claim === "result") return "exit";
   if (s.claim === "taken_over") return "stay";
-  if (s.messages.includes("accepted") || s.descendants?.pending) return "send";
+  if (s.messages.includes("accepted") || s.messages.includes("lost") || s.descendants?.pending)
+    return "send";
   if (s.messages.includes("sent")) return "wait";
   if (s.descendants?.live) return "park";
   return "publish";

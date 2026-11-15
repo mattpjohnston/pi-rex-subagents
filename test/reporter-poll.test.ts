@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import {
+  atomicWrite,
   initialActivity,
   privateDirectory,
   runPaths,
@@ -29,8 +30,8 @@ afterEach(async () => {
   if (dir) await rm(dir, { recursive: true, force: true });
 });
 
-it("a working child with an empty inbox polls without taking the protocol lock", async () => {
-  dir = await mkdtemp(join(tmpdir(), "pirs-poll-"));
+async function child() {
+  dir = await mkdtemp(join(tmpdir(), "pirs-reporter-"));
   vi.stubEnv("PI_SUBAGENTS_STATE_DIR", dir);
   const id = "d".repeat(24);
   const runDir = join(dir, "runs", id);
@@ -69,6 +70,7 @@ it("a working child with an empty inbox polls without taking the protocol lock",
   };
   await writeRun(run);
   const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+  const sent: string[] = [];
   const pi = new Proxy(
     {
       on: (name: string, handler: (event: unknown, ctx: unknown) => unknown) =>
@@ -76,6 +78,8 @@ it("a working child with an empty inbox polls without taking the protocol lock",
       getActiveTools: () => [],
       getAllTools: () => [],
       getThinkingLevel: () => "off",
+      sendUserMessage: (text: string) => sent.push(text),
+      events: { emit: () => {}, on: () => () => {} },
     },
     {
       get: (target, key) => (key in target ? target[key as keyof typeof target] : () => undefined),
@@ -92,6 +96,11 @@ it("a working child with an empty inbox polls without taking the protocol lock",
     ui: { notify: () => {} },
     shutdown: () => {},
   };
+  return { run, handlers, ctx, sent };
+}
+
+it("a working child with an empty inbox polls without taking the protocol lock", async () => {
+  const { handlers, ctx } = await child();
   vi.useFakeTimers({ toFake: ["setInterval"] });
   await handlers.get("session_start")?.({ reason: "startup" }, ctx);
   locks.count = 0;
@@ -101,4 +110,29 @@ it("a working child with an empty inbox polls without taking the protocol lock",
   }
   await handlers.get("session_shutdown")?.({ reason: "reload" }, ctx);
   expect(locks.count).toBe(0);
+});
+
+it("settlement sends again a message Pi dropped after it was sent", async () => {
+  const { run, handlers, ctx, sent } = await child();
+  const messageId = "0123abcd-0000-4000-8000-000000000001";
+  await atomicWrite(join(run.paths.inbox, `${messageId}.json`), {
+    id: messageId,
+    runId: run.id,
+    text: "hold before committing",
+    sender: run.parentSessionId,
+    createdAt: 1,
+  });
+  // Accepted and handed to Pi earlier, but never seen in a saved user message.
+  await atomicWrite(join(run.paths.inbox, `${messageId}.ack.json`), {
+    messageId,
+    runId: run.id,
+    state: "accepted",
+    acceptedAt: 1,
+    sentAt: 2,
+  });
+  vi.useFakeTimers({ toFake: ["setInterval"] });
+  await handlers.get("session_start")?.({ reason: "startup" }, ctx);
+  await handlers.get("agent_settled")?.({ aborted: false }, ctx);
+  await handlers.get("session_shutdown")?.({ reason: "reload" }, ctx);
+  expect(sent.filter((text) => text.includes(`[subagent message ${messageId}]`))).toHaveLength(1);
 });

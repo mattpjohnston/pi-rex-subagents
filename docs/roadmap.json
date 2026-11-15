@@ -24,7 +24,7 @@
       ],
       "status": "done",
       "evidence": "test/terminals.test.ts: release after confirmation removes the reservation member and records releasedAt with the process exited; declining changes nothing; a known tab, a live process, and a takeover are each refused with the reason. Four of the five failed before the change; the decline case passes either way. scripts/check.sh all pass, 164 tests.",
-      "commit": null
+      "commit": "70cfd1f"
     },
     {
       "id": "lost-message",
@@ -35,8 +35,8 @@
         "A sent message still unconsumed after a reporter reload is sent again",
         "Unit test fails before the change"
       ],
-      "status": "todo",
-      "evidence": null,
+      "status": "done",
+      "evidence": "models/protocol.py: new transition 'Pi drops a queued message' and a check that every state finishes without outside help; nov14 (old rule) fails with 'reporter accepts m0 and steers -> Pi drops m0' stuck, current passes over 600 states. test/inbox.test.ts: TypeScript matches all 600 model states including 20 lost-message resends. test/reporter-poll.test.ts: a message sent before settlement and never consumed is sent again; failed before (0 sends), passes after (1). The reload case is the same rule: any sent, unconsumed message older than the latest settlement is resent. scripts/check.sh all pass, 165 tests.",
       "commit": null
     },
     {

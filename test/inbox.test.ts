@@ -37,7 +37,9 @@ const Snapshot = Type.Object({
   ),
   messages: Type.Array(
     Type.Union(
-      ["none", "written", "accepted", "sent", "consumed", "refused"].map((s) => Type.Literal(s)),
+      ["none", "written", "accepted", "sent", "lost", "consumed", "refused"].map((s) =>
+        Type.Literal(s),
+      ),
     ),
   ),
   piQueue: Type.Array(Type.Number()),
@@ -52,19 +54,22 @@ it("matches every reachable current protocol state (including the e19 counterexa
       encoding: "utf8",
     });
     let count = 0,
-      pending = 0;
+      pending = 0,
+      resent = 0;
     for (const line of (await readFile(path, "utf8")).trim().split("\n")) {
       const c = parse(Case, JSON.parse(line));
       const s = c.snapshot as ProtocolSnapshot;
       expect(inboxDecision(s), `inbox ${line}`).toBe(c.inbox);
       expect(settlementDecision(s), `settlement ${line}`).toBe(c.settlement);
       if (c.settlement === "wait") pending++;
+      if (c.settlement === "send" && s.messages.includes("lost")) resent++;
       count++;
     }
-    expect(count).toBe(461);
+    expect(count).toBe(600);
     expect(pending).toBeGreaterThan(0);
+    expect(resent).toBeGreaterThan(0);
     console.log(
-      `Protocol differential: ${summary.trim()}; ${pending} pending-message settlements; ${(performance.now() - started).toFixed(0)} ms`,
+      `Protocol differential: ${summary.trim()}; ${pending} pending-message settlements; ${resent} lost-message resends; ${(performance.now() - started).toFixed(0)} ms`,
     );
   } finally {
     await rm(dir, { recursive: true, force: true });

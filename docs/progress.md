@@ -25,3 +25,9 @@ Next: release.
 `/subagents release <label|run-id>` frees an uncertain launch: no Rex tab recorded and the process unresolved or unknown. It asks the person to confirm nothing is running, rechecks under the admission lock, drops the reservation and ticket, and records `releasedAt` with the process exited. It refuses a known tab, a live process, a takeover, or an already-exited process. `releaseRefusal()` and `releaseRun()` are in admission.ts.
 
 Next: lost-message.
+
+## 2026-11-15 lost-message
+
+Pi settles only after running what it queued, so a message marked sent before the latest settlement and still unconsumed was dropped. The reporter now marks such messages `lost` and settlement sends them again; it used to wait for them forever. The protocol model gained a "Pi drops a queued message" step and a check that every state can finish without someone stepping in; the old rule (`nov14`) fails it and the current rule passes. The roadmap's "after a reporter reload" case is covered by the same rule rather than a separate reload hook. Duplicates are possible in a same-millisecond race and accepted.
+
+Next: nested-git.

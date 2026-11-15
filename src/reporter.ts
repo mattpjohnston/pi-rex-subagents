@@ -66,6 +66,11 @@ export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
   let polling = false;
   let settling = false;
   let hasSettled = false;
+  // When Pi last settled. A message sent before then and still unconsumed was dropped.
+  let settledAt = 0;
+  // Same millisecond counts as before: a duplicate message is better than a stranded one.
+  const lost = (entry: InboxEntry) =>
+    entry.ack?.state === "accepted" && entry.ack.sentAt !== null && entry.ack.sentAt <= settledAt;
   const sentOutcomes = new Set<string>();
   let timer: ReturnType<typeof setInterval> | undefined;
   const snapshot = async (
@@ -76,7 +81,7 @@ export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
     claim: await readClaim(run.paths.claim),
     lock: null,
     child: phase ?? (settling ? "settling" : ctx.isIdle() ? "idle" : "working"),
-    messages: entries.map(messageState),
+    messages: entries.map((entry) => (lost(entry) ? "lost" : messageState(entry))),
   });
   const consume = async (ctx: ExtensionContext, entries: InboxEntry[]) => {
     const userTexts = ctx.sessionManager.getBranch().flatMap((entry) => {
@@ -133,7 +138,7 @@ export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
     outcomes: DeliveryOutcome[] = [],
   ) => {
     const unsent = entries.filter(
-      (entry) => entry.ack?.state === "accepted" && entry.ack.sentAt === null,
+      (entry) => entry.ack?.state === "accepted" && (entry.ack.sentAt === null || lost(entry)),
     );
     if (!unsent.length && !outcomes.length) return;
     await markSent(run, unsent);
@@ -418,6 +423,7 @@ export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
   pi.on("agent_settled", async (event, ctx) => {
     log("agent_settled", { aborted: event.aborted, shutdown });
     hasSettled = true;
+    settledAt = Date.now();
     settling = true;
     try {
       if (!shutdown) await settle(ctx, event.aborted);

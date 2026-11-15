@@ -18,6 +18,8 @@ def actions(labels):
             settlement = "exit"
         elif label == "reporter sees claim and stays idle":
             settlement = "stay"
+        elif label.startswith("settlement sends lost"):
+            settlement = "send"
         elif label == "settlement waits for accepted messages":
             settlement = "wait"
         elif label == "reporter claims result and shuts down":
@@ -34,9 +36,12 @@ def main():
             claim, lock, child, parent, msgs, piq, alive = state
             nxt = successors(state, "current")
             inbox, settlement = actions([label for _, label in nxt])
+            # At settlement, a sent message Pi no longer holds is what the reporter calls lost.
+            shown = tuple("lost" if child == "settling" and m == "sent" and i not in piq else m
+                          for i, m in enumerate(msgs))
             output.write(json.dumps({
                 "snapshot": {"claim": claim, "lock": lock, "child": child,
-                             "messages": msgs, "piQueue": piq},
+                             "messages": shown, "piQueue": piq},
                 "inbox": inbox, "settlement": settlement,
             }, separators=(",", ":")) + "\n")
             for ns, _ in nxt:

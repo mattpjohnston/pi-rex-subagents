@@ -121,9 +121,10 @@ export async function acceptWritten(run: RunRecord, entries: InboxEntry[]): Prom
     await atomicWrite(ackPath(run, entry.message.id), entry.ack);
   }
 }
+/** Callers pass only messages to send now, including ones sent before and lost. */
 export async function markSent(run: RunRecord, entries: InboxEntry[]): Promise<void> {
   for (const entry of entries) {
-    if (entry.ack?.state !== "accepted" || entry.ack.sentAt !== null) continue;
+    if (entry.ack?.state !== "accepted") continue;
     entry.ack = { ...entry.ack, sentAt: Date.now() };
     await atomicWrite(ackPath(run, entry.message.id), entry.ack);
   }
