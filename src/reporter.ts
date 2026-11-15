@@ -23,7 +23,13 @@ import {
   type ResultFile,
   type RunRecord,
 } from "./records.ts";
-import { outcomeOf, outcomeSettled, packDelivery, type DeliveryOutcome } from "./delivery.ts";
+import {
+  deliveredRunIds,
+  outcomeOf,
+  outcomeSettled,
+  packDelivery,
+  type DeliveryOutcome,
+} from "./delivery.ts";
 import { inspectViolations, readViolations, type ToolSnapshot } from "./restrictions.ts";
 import { deriveOutcome } from "./results.ts";
 import { canLaunchChildren, park, tryWake, updateMemberProvider, wake } from "./admission.ts";
@@ -102,6 +108,8 @@ export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
     const branch = ctx.sessionManager.getBranch();
     const seen = new Set<string>();
     const texts: string[] = [];
+    // subagent_control wait results count, the same way background delivery counts them.
+    const waited = deliveredRunIds(branch);
     for (const entry of branch) {
       if (entry.type !== "message") continue;
       if (entry.message.role === "user") texts.push(JSON.stringify(entry.message.content));
@@ -125,6 +133,7 @@ export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
         continue;
       }
       if (
+        !waited.has(child.id) &&
         (child.background || !seen.has(child.id)) &&
         !texts.some((text) => text.includes(`[subagent outcome ${child.id}]`))
       )

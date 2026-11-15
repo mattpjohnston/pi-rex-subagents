@@ -164,7 +164,7 @@ No session change cancels a subagent you've taken over.
 
 ## Parent controls and messages
 
-`subagent_control` has `list`, `cancel`, and `message`. There's no "wait" operation. `list` shows at most 30 runs: the parent's subagents and theirs. `cancel` takes the same path as `/subagents cancel`.
+`subagent_control` has `list`, `cancel`, `message`, and `wait`. `list` shows at most 30 runs: the parent's subagents and theirs. `cancel` takes the same path as `/subagents cancel`. `wait` blocks until each named run has an outcome, or a timeout passes, 10 minutes by default and an hour at most. It returns those outcomes under the same cap as a background delivery, and they aren't delivered again, because delivery counts a `wait` result on the branch like a `subagent-results` message. Aborting the call ends the wait and cancels nothing. A subagent that waits is parked meanwhile, like one in a foreground launch. Like a foreground launch, a parent that waits can't be steered until it returns.
 
 A message is a file, `inbox/<id>.json`, holding the ID, run ID, text, sender (the parent's Pi session ID), and time. Its answer is a second file, `<id>.ack.json`, which says `accepted` (with when it was sent to the model, once it is), `consumed`, or `refused` (with the claim that caused it).
 

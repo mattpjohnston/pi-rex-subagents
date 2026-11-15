@@ -49,7 +49,7 @@
       ],
       "status": "done",
       "evidence": "test/fingerprint.test.ts: in a plain-directory root, changing a nested repository's config, a hook, a branch ref, and HEAD each report changed with that path; no fingerprint key is under .git/objects. Failed before (reported clean), passes after. scripts/check.sh all pass, 166 tests.",
-      "commit": null
+      "commit": "5f502b9"
     },
     {
       "id": "wait",
@@ -60,8 +60,8 @@
         "A background run reported by wait is not delivered again",
         "Unit test and a harness scenario assertion"
       ],
-      "status": "todo",
-      "evidence": null,
+      "status": "done",
+      "evidence": "test/control.test.ts: waitForRuns returns an ended run's outcome, lists a running one as pending at a 300 ms timeout, and returns at once on abort without cancelling. test/delivery.test.ts: a subagent_control tool result counts as delivered (failed before). Harness control (HARNESS_MODEL=openai/gpt-6-luna because OpenCode Go's weekly limit was used up): a real parent model's wait with a 1 s timeout lists the held child as still running; a wait started before the child is released returns 'Run: <id> / Outcome: completed' with details.runIds, and no subagent-results delivery names the run 6 s later. Every other control part still passes. scripts/check.sh all pass, 168 tests.",
       "commit": null
     },
     {

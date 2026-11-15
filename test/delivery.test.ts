@@ -190,3 +190,21 @@ it("coalesces on settle or the idle timer, and reconciles without waiting", () =
     "deliver",
   );
 });
+
+it("counts runs reported by subagent_control wait as delivered", () => {
+  const branch = [
+    {
+      type: "message",
+      message: {
+        role: "toolResult",
+        toolName: "subagent_control",
+        details: { runIds: ["c".repeat(24)] },
+      },
+    },
+    {
+      type: "message",
+      message: { role: "toolResult", toolName: "read", details: { runIds: ["d".repeat(24)] } },
+    },
+  ];
+  expect(deliveredRunIds(branch)).toEqual(new Set(["c".repeat(24)]));
+});

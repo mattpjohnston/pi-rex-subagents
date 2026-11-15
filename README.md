@@ -108,6 +108,7 @@ The parent model can call `subagent_control`:
 - `list` shows its subagents and what each is doing.
 - `cancel` stops one. It won't cancel a subagent you've taken over.
 - `message` sends one a short instruction, such as "stop" or "wait before committing". The tool reports `accepted`, `refused`, or `unacknowledged` after 10 seconds. A subagent never finishes with an accepted message it hasn't read yet.
+- `wait` blocks until the named subagents finish, or a timeout passes, and returns their results. They aren't delivered again. You can't steer the parent while it waits, so background results are usually the better choice.
 
 ### Settings
 

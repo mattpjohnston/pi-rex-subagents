@@ -76,7 +76,8 @@ export async function parentTool(
   return {
     message: result,
     text,
-    ...(name === "subagent_control" ? object(JSON.parse(text)) : {}),
+    // wait answers in prose, like a background delivery; the other operations answer in JSON.
+    ...(name === "subagent_control" && input.operation !== "wait" ? object(JSON.parse(text)) : {}),
   };
 }
 export async function userMessageWithId(record: RunRecord, id: string): Promise<void> {

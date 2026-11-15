@@ -37,3 +37,11 @@ Next: nested-git.
 The inspect fingerprint skipped every `.git`. It now skips only the root's own `.git`, which git metadata already covers, and walks any nested `.git` except its object store. This fixes a plain-directory root and also a nested repository inside a repository. A `.git` file (worktree or submodule pointer) is hashed like any file.
 
 Next: wait.
+
+## 2026-11-15 wait
+
+`subagent_control wait` takes `runIds` and `timeoutSeconds` (600 by default, 3,600 at most), returns the outcomes under the background delivery cap, and lists what's still running. Delivery counts a `wait` tool result like a `subagent-results` message, for background delivery and for nested children, so nothing arrives twice. A child that waits is parked. The harness `control` scenario checks it with a real model.
+
+OpenCode Go's weekly limit ran out during this item (resets around 00:00 on 16 November), so the harness ran on openai/gpt-6-luna. The final suite should use the agreed model once it resets.
+
+Next: placement.

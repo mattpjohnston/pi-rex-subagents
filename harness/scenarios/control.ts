@@ -13,6 +13,9 @@ import {
   userMessageWithId,
 } from "../lib/phase-five.ts";
 import { withRun } from "../lib/run.ts";
+import { setTimeout as delay } from "node:timers/promises";
+import { entries, sessionPath } from "../lib/phase-four.ts";
+import { object } from "../lib/rex.ts";
 
 export default async function control(): Promise<void> {
   await withRun("control", async (run) => {
@@ -178,8 +181,39 @@ export default async function control(): Promise<void> {
     console.log(
       "control cancel: PASS; real model cancels queued and live background children through durable claims; both exited",
     );
+    const early = await parentTool(run, foreign.parent, "foreign", "subagent_control", {
+      operation: "wait",
+      runIds: [outsider.id],
+      timeoutSeconds: 1,
+    });
+    assert.match(String(early.text), new RegExp(`Still running or not shown: ${outsider.id}`));
+    // The parent is blocked in wait when the child finishes, so normal delivery must hold off.
+    const waiting = parentTool(run, foreign.parent, "foreign", "subagent_control", {
+      operation: "wait",
+      runIds: [outsider.id],
+      timeoutSeconds: 120,
+    });
+    await until("parent calls wait", async () =>
+      (await maybeFile(join(run.out, "foreign-tools.jsonl")))?.includes('"timeoutSeconds":120'),
+    );
     await release(outsider);
     await finished(run, outsider);
+    const waited = await waiting;
+    assert.match(String(waited.text), new RegExp(`Run: ${outsider.id}\nOutcome: completed`));
+    assert.deepEqual(object(waited.message).details, { runIds: [outsider.id] });
+    // Past the 3 s coalescing window: a result reported by wait is never delivered again.
+    await delay(6000);
+    const foreignSession = await sessionPath(run, "foreign");
+    const redelivered = (await entries(foreignSession)).some(
+      (row) =>
+        row.type === "custom_message" &&
+        row.customType === "subagent-results" &&
+        JSON.stringify(row.details).includes(outsider.id),
+    );
+    assert.equal(redelivered, false, "A result reported by wait must not be delivered again");
+    console.log(
+      "control wait: PASS; real model waits, the timeout lists the running child, the outcome comes back once and is not redelivered",
+    );
     await run.record("control-evidence.json", {
       list,
       message,

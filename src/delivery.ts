@@ -31,6 +31,7 @@ export interface BranchNode {
   type: string;
   customType?: string;
   details?: unknown;
+  message?: { role?: string; toolName?: string; details?: unknown };
 }
 
 export type DeliverySource = "settled" | "timer" | "reconcile" | "append" | "finished";
@@ -106,6 +107,9 @@ export function deliveredRunIds(branch: readonly BranchNode[]): Set<string> {
   for (const entry of branch) {
     if (entry.type === "custom_message" && entry.customType === RESULTS_TYPE)
       for (const id of listedIds(entry.details)) ids.add(id);
+    // subagent_control wait reports outcomes in its own tool result.
+    if (entry.message?.role === "toolResult" && entry.message.toolName === "subagent_control")
+      for (const id of listedIds(entry.message.details)) ids.add(id);
   }
   return ids;
 }
