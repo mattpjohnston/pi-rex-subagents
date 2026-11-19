@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
@@ -209,4 +209,28 @@ it("sees a changed hook, in the default hooks directory and in core.hooksPath", 
   await writeFile(join(root, ".githooks/post-checkout"), "#!/bin/sh\n");
   after = ok(await captureFingerprint(root));
   expect(compareFingerprints(before, after).paths).toContain(".githooks/post-checkout");
+});
+
+it("ignores git's own churn in a nested repository, but sees what it stages", async () => {
+  const root = await scratch();
+  const nested = join(root, "project");
+  execFileSync("git", ["init", "-q", nested]);
+  const git = (...args: string[]) =>
+    execFileSync("git", ["-C", nested, "-c", "user.name=a", "-c", "user.email=a@b", ...args], {
+      input: "stray object\n",
+    });
+  await writeFile(join(nested, "f"), "hi\n");
+  git("add", "f");
+  git("commit", "-qm", "init");
+  const before = ok(await captureFingerprint(root));
+  // Refreshing the index, a new loose object, and reflog writes change bytes, not state.
+  await utimes(join(nested, "f"), new Date(), new Date(Date.now() + 60_000));
+  git("status");
+  git("hash-object", "-w", "--stdin");
+  git("update-ref", "-m", "note", "HEAD", "HEAD");
+  expect(compareFingerprints(before, ok(await captureFingerprint(root))).state).toBe("clean");
+  await writeFile(join(nested, "f"), "staged\n");
+  git("add", "f");
+  const report = compareFingerprints(before, ok(await captureFingerprint(root)));
+  expect(report.paths).toEqual(["project/f"]);
 });

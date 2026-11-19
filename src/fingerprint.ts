@@ -123,15 +123,17 @@ async function hashOne(
   return { hash: await hashStream(path) };
 }
 
+/**
+ * Content hashes of every file under root, skipping each .git. A repository nested below root
+ * is measured through git instead, like the root (nestedRepositories), because its .git holds
+ * object stores and files git rewrites on a mere status.
+ */
 async function hashTree(
   root: string,
   budget: Budget,
+  nested: string[] = [],
 ): Promise<Record<string, string> | FingerprintUnknown> {
   const files: Record<string, string> = {};
-  // The root's own .git is captured through git; a nested repository's .git is walked here,
-  // except its object store, which only grows and whose effects show in refs and the index.
-  const skipped = (rel: string, name: string) =>
-    (rel === "" && name === ".git") || (rel.split("/").at(-1) === ".git" && name === "objects");
   const walk = async (dir: string, rel: string): Promise<FingerprintUnknown | null> => {
     if (budget.expired()) return unknown(budget.reason ?? "fingerprint budget exceeded");
     let entries;
@@ -141,7 +143,10 @@ async function hashTree(
       return unknown(error instanceof Error ? error.message : String(error));
     }
     for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-      if (skipped(rel, entry.name)) continue;
+      if (entry.name === ".git") {
+        if (rel !== "") nested.push(rel);
+        continue;
+      }
       const child = join(dir, entry.name);
       const childRel = rel ? `${rel}/${entry.name}` : entry.name;
       const stat = await lstat(child);
@@ -152,8 +157,8 @@ async function hashTree(
         continue;
       }
       if (stat.isDirectory()) {
-        const nested = await walk(child, childRel);
-        if (nested) return nested;
+        const failed = await walk(child, childRel);
+        if (failed) return failed;
         continue;
       }
       if (!stat.isFile()) continue;
@@ -165,6 +170,27 @@ async function hashTree(
   };
   const failed = await walk(root, "");
   return failed ?? files;
+}
+
+/** Each nested repository's git state, under keys prefixed with its path. */
+async function nestedRepositories(
+  root: string,
+  nested: readonly string[],
+  budget: Budget,
+): Promise<Record<string, string> | FingerprintUnknown> {
+  const meta: Record<string, string> = {};
+  for (const rel of nested) {
+    const state = await gitState(join(root, rel), budget);
+    if (state.state === "unknown") return state;
+    meta[`${rel}/.git/HEAD`] = `${state.head ?? ""} ${state.headSymbolic ?? ""}`;
+    for (const [ref, id] of Object.entries(state.refs)) meta[`${rel}/.git/${ref}`] = id;
+    for (const [path, entry] of Object.entries(state.stage))
+      meta[`${rel}/${path}`] = `${entry} ${state.flags[path] ?? ""}`;
+    // Paths git gives outside the repository come back as labels such as git/config.
+    for (const [path, hash] of Object.entries(state.meta))
+      meta[`${rel}/${path.replace(/^git\//, ".git/")}`] = hash;
+  }
+  return meta;
 }
 
 async function gitText(
@@ -256,7 +282,12 @@ async function hashMetaDir(
   return null;
 }
 
-async function captureGit(root: string, budget: Budget): Promise<Fingerprint> {
+type GitState = Omit<FingerprintOk, "version" | "state" | "kind" | "files">;
+/** HEAD, refs, the staged entries and their flags, config, hooks and info/ of one repository. */
+async function gitState(
+  root: string,
+  budget: Budget,
+): Promise<(GitState & { state: "ok" }) | FingerprintUnknown> {
   const head = await gitText(root, ["rev-parse", "--verify", "HEAD"], budget);
   if ("state" in head) return head;
   const symbolic = await gitText(root, ["symbolic-ref", "-q", "HEAD"], budget);
@@ -319,8 +350,6 @@ async function captureGit(root: string, budget: Budget): Promise<Fingerprint> {
     const failed = await hashMetaDir(root, path, label, budget, meta);
     if (failed) return failed;
   }
-  const files = await hashTree(root, budget);
-  if (isUnknownFingerprint(files)) return files;
   const headFailed =
     head.code !== 0 &&
     !/unknown revision|needed a single revision|ambiguous argument|not a valid object/.test(
@@ -334,17 +363,35 @@ async function captureGit(root: string, budget: Budget): Promise<Fingerprint> {
   if (stage.code !== 0) return unknown(stage.stderr.trim() || "Cannot read the index");
   if (flags.code !== 0) return unknown(flags.stderr.trim() || "Cannot read index flags");
   return {
-    version: 1,
     state: "ok",
-    kind: "git",
     head: head.code === 0 ? head.stdout.trim() : null,
     headSymbolic: symbolic.code === 0 ? symbolic.stdout.trim() : null,
     refs: parseShowRef(refs.stdout),
     stage: parseStage(stage.stdout),
     flags: parseFlags(flags.stdout),
     meta,
-    files,
   };
+}
+
+async function captureGit(root: string, budget: Budget): Promise<Fingerprint> {
+  const state = await gitState(root, budget);
+  if (state.state === "unknown") return state;
+  const tree = await captureTree(root, budget);
+  if (tree.state === "unknown") return tree;
+  return { ...tree, ...state, version: 1, kind: "git", meta: { ...state.meta, ...tree.meta } };
+}
+
+/** The files under root and the git state of repositories nested in it. */
+async function captureTree(
+  root: string,
+  budget: Budget,
+): Promise<FingerprintOk | FingerprintUnknown> {
+  const nested: string[] = [];
+  const files = await hashTree(root, budget, nested);
+  if (isUnknownFingerprint(files)) return files;
+  const meta = await nestedRepositories(root, nested, budget);
+  if (isUnknownFingerprint(meta)) return meta;
+  return { ...emptyDir(files), meta };
 }
 
 export async function captureFingerprint(root: string): Promise<Fingerprint> {
@@ -359,16 +406,12 @@ export async function captureFingerprint(root: string): Promise<Fingerprint> {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (/not a git repository/i.test(message)) {
-      const files = await hashTree(root, budget);
-      if (isUnknownFingerprint(files)) return files;
-      return emptyDir(files);
+      return captureTree(root, budget);
     }
     return unknown(message);
   }
   if (probe.code !== 0 && /not a git repository/i.test(probe.stderr)) {
-    const files = await hashTree(root, budget);
-    if (isUnknownFingerprint(files)) return files;
-    return emptyDir(files);
+    return captureTree(root, budget);
   }
   if (probe.code !== 0) return unknown(probe.stderr.trim() || "Cannot identify the checkout");
   return captureGit(root, budget);
