@@ -234,3 +234,12 @@ it("ignores git's own churn in a nested repository, but sees what it stages", as
   const report = compareFingerprints(before, ok(await captureFingerprint(root)));
   expect(report.paths).toEqual(["project/f"]);
 });
+
+it("fingerprints a repository with no commits yet", async () => {
+  const root = await scratch();
+  execFileSync("git", ["init", "-q", root]);
+  const before = ok(await captureFingerprint(root));
+  expect(before.head).toBeNull();
+  await writeFile(join(root, "first"), "x\n");
+  expect(compareFingerprints(before, ok(await captureFingerprint(root))).paths).toEqual(["first"]);
+});

@@ -352,7 +352,7 @@ async function gitState(
   }
   const headFailed =
     head.code !== 0 &&
-    !/unknown revision|needed a single revision|ambiguous argument|not a valid object/.test(
+    !/unknown revision|needed a single revision|ambiguous argument|not a valid object/i.test(
       `${head.stderr} ${head.stdout}`,
     );
   if (headFailed) return unknown(head.stderr.trim() || "Cannot read HEAD");
