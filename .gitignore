@@ -3,3 +3,4 @@ node_modules/
 *.jsonl
 auth.json
 .DS_Store
+.work/
