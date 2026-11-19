@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { lstat, readdir, readlink } from "node:fs/promises";
-import { join, relative, sep } from "node:path";
+import { homedir } from "node:os";
+import { join, relative, resolve, sep } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { runHardenedGit } from "./git-read.ts";
 import { isMissing, type CheckoutReport } from "./records.ts";
@@ -284,8 +285,20 @@ async function captureGit(root: string, budget: Budget): Promise<Fingerprint> {
   if ("state" in common) return common;
   const worktreeConfig = await gitPath("config.worktree");
   if ("state" in worktreeConfig) return worktreeConfig;
-  const hooks = await gitPath("hooks");
-  if ("state" in hooks) return hooks;
+  // Hardened git points core.hooksPath at an empty directory, so --git-path hooks would name
+  // that. --local reads the repository's own setting without the override.
+  const hooksSetting = await gitText(
+    root,
+    ["config", "--get", "--local", "core.hooksPath"],
+    budget,
+  );
+  if ("state" in hooksSetting) return hooksSetting;
+  const configuredHooks = hooksSetting.code === 0 ? hooksSetting.stdout.trim() : "";
+  const hooks = {
+    stdout: configuredHooks
+      ? resolve(root, configuredHooks.replace(/^~(?=\/|$)/, homedir()))
+      : join(common.stdout.trim(), "hooks"),
+  };
   const info = await gitPath("info");
   if ("state" in info) return info;
   const meta: Record<string, string> = {};

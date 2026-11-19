@@ -196,3 +196,17 @@ it("sees changes inside a nested repository's .git, but not its object store", a
     previous = after;
   }
 });
+
+it("sees a changed hook, in the default hooks directory and in core.hooksPath", async () => {
+  const root = await gitRepo();
+  let before = ok(await captureFingerprint(root));
+  await writeFile(join(root, ".git/hooks/pre-commit"), "#!/bin/sh\n");
+  let after = ok(await captureFingerprint(root));
+  expect(compareFingerprints(before, after).state).toBe("changed");
+  execFileSync("git", ["-C", root, "config", "core.hooksPath", ".githooks"]);
+  execFileSync("mkdir", [join(root, ".githooks")]);
+  before = ok(await captureFingerprint(root));
+  await writeFile(join(root, ".githooks/post-checkout"), "#!/bin/sh\n");
+  after = ok(await captureFingerprint(root));
+  expect(compareFingerprints(before, after).paths).toContain(".githooks/post-checkout");
+});
