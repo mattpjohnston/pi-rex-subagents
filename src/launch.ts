@@ -734,9 +734,10 @@ async function watch(
         );
         run.unconsumedMessages = pending.map(({ id, text }) => ({ id, text }));
         transition(run, "taken_over");
+        const checkout = await finishCheckout(run, before);
         await writeRun(run);
         progress(run);
-        return { run, checkout: await finishCheckout(run, before) };
+        return { run, checkout };
       }
       if (winner === "result" && !resultDeadline) {
         resultDeadline = Date.now() + SHUTDOWN_MS;
@@ -802,10 +803,11 @@ async function watch(
       }
       await delay(200);
     }
-    await writeRun(run);
-    progress(run);
+    // Readers treat an ended, exited record as finished, so the checkout report comes first.
     const checkout = await finishCheckout(run, before);
     if (checkout && result) result = { ...result, checkout };
+    await writeRun(run);
+    progress(run);
     return { run, ...(result ? { result } : {}), ...(checkout ? { checkout } : {}) };
   } finally {
     events.changes.off(blockId, listener);
