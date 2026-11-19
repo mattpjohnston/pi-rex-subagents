@@ -72,12 +72,15 @@ export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
   let polling = false;
   let settling = false;
   let hasSettled = false;
-  // When Pi last settled. A message sent before then and still unconsumed was dropped.
+  // When settlement last ran, which it only does once Pi is settled and holds nothing queued.
+  // A message or outcome sent before then and still unconsumed was dropped.
   let settledAt = 0;
   // Same millisecond counts as before: a duplicate message is better than a stranded one.
   const lost = (entry: InboxEntry) =>
     entry.ack?.state === "accepted" && entry.ack.sentAt !== null && entry.ack.sentAt <= settledAt;
-  const sentOutcomes = new Set<string>();
+  const sentOutcomes = new Map<string, number>();
+  const outcomeInFlight = (outcome: DeliveryOutcome) =>
+    (sentOutcomes.get(outcome.runId) ?? -Infinity) > settledAt;
   let timer: ReturnType<typeof setInterval> | undefined;
   const snapshot = async (
     ctx: ExtensionContext,
@@ -164,7 +167,7 @@ export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
     const descendantText =
       packed.runIds.map((id) => `[subagent outcome ${id}]`).join("\n") +
       (packed.content ? `\n${packed.content}` : "");
-    for (const id of packed.runIds) sentOutcomes.add(id);
+    for (const id of packed.runIds) sentOutcomes.set(id, Date.now());
     outsideAdmission(() =>
       pi.sendUserMessage(
         [messageText(unsent.map((entry) => entry.message)), descendantText]
@@ -200,6 +203,7 @@ export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
     aborted: boolean,
     quitting = false,
   ): Promise<void> => {
+    settledAt = Date.now();
     // Harness extensions can hold this boundary without adding a second settlement owner.
     const boundary = { runId: run.id, before: Promise.resolve(), hold: false };
     pi.events.emit("subagents:test-settlement", boundary);
@@ -217,7 +221,10 @@ export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
       if (
         decision === "send" &&
         descendants.pending.length &&
-        descendants.pending.every((outcome) => sentOutcomes.has(outcome.runId))
+        descendants.pending.every(outcomeInFlight) &&
+        !entries.some(
+          (entry) => entry.ack?.state === "accepted" && (entry.ack.sentAt === null || lost(entry)),
+        )
       )
         return "stay";
       if (decision === "send") {
@@ -227,7 +234,11 @@ export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
           });
           return "wake";
         }
-        await dispatch(ctx, entries, descendants.pending);
+        await dispatch(
+          ctx,
+          entries,
+          descendants.pending.filter((outcome) => !outcomeInFlight(outcome)),
+        );
         return "stay";
       }
       if (decision === "wait" || decision === "park") {
@@ -328,6 +339,17 @@ export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
     }
     await enforceRestriction(ctx, event.reason);
     context = ctx;
+    // A reload drops what Pi had queued. An idle child holding a message sent but never seen
+    // then counts as settled, so the next poll's settlement sends it again. Only then: an idle
+    // child with nothing owed has already settled, and must not publish again.
+    if (
+      event.reason === "reload" &&
+      ctx.isIdle() &&
+      (await inboxEntries(run)).some(
+        (entry) => entry.ack?.state === "accepted" && entry.ack.sentAt !== null,
+      )
+    )
+      hasSettled = true;
     // Polling survives atomic rename and needs no platform-specific fs.watch fallback.
     timer = setInterval(() => {
       if (!context || polling || shutdown) return;
@@ -432,7 +454,6 @@ export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
   pi.on("agent_settled", async (event, ctx) => {
     log("agent_settled", { aborted: event.aborted, shutdown });
     hasSettled = true;
-    settledAt = Date.now();
     settling = true;
     try {
       if (!shutdown) await settle(ctx, event.aborted);
