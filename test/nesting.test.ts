@@ -135,6 +135,15 @@ it("builds the model's nested reservation, parking, takeover, and ancestry shape
     });
     snapshot = await admissionSnapshot(await readLimits());
     expect(decide(snapshot).tickets.find((r) => r.id === c.id)?.reason).not.toBe("checkout");
+    // A parent in subagent_control wait is waiting for this child, so it must not hold the join.
+    await updateActivity(b.id, (activity) => {
+      activity.tools.push({ id: "waiting", name: "subagent_control" });
+    });
+    snapshot = await admissionSnapshot(await readLimits());
+    expect(decide(snapshot).tickets.find((r) => r.id === c.id)?.reason).not.toBe("checkout");
+    await updateActivity(b.id, (activity) => {
+      activity.tools = activity.tools.filter((tool) => tool.name !== "subagent_control");
+    });
     delete c.launchCaller;
     c.background = true;
     await writeRun(c);

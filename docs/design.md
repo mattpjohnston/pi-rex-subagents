@@ -133,7 +133,7 @@ Nesting needs three extra rules, or subagents deadlock waiting for each other:
 - A launch that would complete a cycle of runs waiting on each other is refused, and the refusal names the runs.
 - A run waiting on its own subagents is "parked". It doesn't count against the caps, and it must get a slot back before its next model call. A parked run that's ready ahead of newer launches goes first. Your own actions, such as taking over, typing in its tab, or changing its model, count at once, even over a cap.
 
-Joining a reservation waits for tool calls the parent already started, so an `edit` or `bash` that's running can't overlap the new subagent. It doesn't wait for a pending `subagent` call, or for a call that contains one, such as a codemode script that starts a subagent. Each of those finishes only after its subagent does, so waiting on it would deadlock. Pi reports every call a codemode script makes as a separate tool call, so an `edit` or `bash` inside the script still holds the join.
+Joining a reservation waits for tool calls the parent already started, so an `edit` or `bash` that's running can't overlap the new subagent. It doesn't wait for a pending `subagent` or `subagent_control` call (whose `wait` waits for the subagent itself), or for a call that contains one, such as a codemode script that starts a subagent. Each of those finishes only after its subagent does, so waiting on it would deadlock. Pi reports every call a codemode script makes as a separate tool call, so an `edit` or `bash` inside the script still holds the join.
 
 While a parent has a live subagent in its reservation, its own `edit` and `write` in that repository are refused.
 

@@ -260,8 +260,9 @@ export async function admissionSnapshot(
       const record = records.find((r) => r.id === parent);
       if (!ancestor || !record) break;
       const owner = parent;
-      // A pending launch, and any call that encloses one (codemode, a harness wrapper), only
-      // waits for its child; Pi tracks every call it makes as its own tool, so those still hold.
+      // A pending launch, any call that encloses one (codemode, a harness wrapper), and
+      // subagent_control (whose wait waits for the child; the rest touch no files) only wait for
+      // children. Pi tracks every call it makes as its own tool, so those still hold.
       const launchCallers = records
         .filter((r) => r.parentRunId === owner && r.launchCaller && !isTerminal(r.lifecycle))
         .map((r) => r.launchCaller ?? "");
@@ -270,7 +271,9 @@ export async function admissionSnapshot(
       if (
         ancestor.reservation === reservation &&
         conflicts(ancestor, run) &&
-        record.activity?.tools.some((tool) => tool.name !== "subagent" && !encloses(tool.id))
+        record.activity?.tools.some(
+          (tool) => !["subagent", "subagent_control"].includes(tool.name) && !encloses(tool.id),
+        )
       )
         run.joining.push(parent);
       parent = ancestor.parent;
