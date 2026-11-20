@@ -508,7 +508,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
             content: [
               {
                 type: "text" as const,
-                text: `Run ${ready.id} (${ready.label}) is ${state}. The result arrives later.`,
+                text: `Run ${ready.id} (${ready.label}) is ${state}. Its result arrives as a message when it finishes; you don't need to wait for it or check on it.`,
               },
             ],
             details: { runId: ready.id },
