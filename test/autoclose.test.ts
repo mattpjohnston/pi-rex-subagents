@@ -98,11 +98,49 @@ test("a tab renamed away from its launch label is kept; the launch label is not"
       { window_id: "w2", label },
     ],
   });
-  expect(tabState(view("reviewer"), where, "reviewer")).toEqual({ viewing: false, kept: false });
-  expect(tabState(view("📌 reviewer"), where, "reviewer")).toEqual({ viewing: false, kept: true });
-  expect(tabState(view("my notes"), where, "reviewer")).toEqual({ viewing: false, kept: true });
-  expect(tabState(view("reviewer", "w2"), where, "reviewer")).toEqual({
+  expect(tabState(view("reviewer"), where, { label: "reviewer" })).toEqual({
+    viewing: false,
+    kept: false,
+  });
+  expect(tabState(view("📌 reviewer"), where, { label: "reviewer" })).toEqual({
+    viewing: false,
+    kept: true,
+  });
+  expect(tabState(view("my notes"), where, { label: "reviewer" })).toEqual({
+    viewing: false,
+    kept: true,
+  });
+  expect(tabState(view("reviewer", "w2"), where, { label: "reviewer" })).toEqual({
     viewing: true,
     kept: false,
   });
+});
+
+test("a floating or detached child is kept by its block label, and viewed only when focused", async () => {
+  const { tabState } = await import("../src/terminals.ts");
+  const run = { label: "reviewer", placement: "float" as const };
+  const where = { sessionId: "s", windowId: "parent", blockId: "child" };
+  const view = (label: string, focused: string, active = "parent") => ({
+    active_window_id: active,
+    windows: [
+      {
+        window_id: "parent",
+        label: "my session",
+        focused_block_id: focused,
+        layers: [
+          { kind: "tiled", blocks: [{ block_id: "pi", label: "pi" }] },
+          { kind: "floating", blocks: [{ block_id: "child", label }] },
+        ],
+      },
+    ],
+  });
+  // The parent's tab label never matches the child's, and must not keep it.
+  expect(tabState(view("reviewer", "pi"), where, run)).toEqual({ viewing: false, kept: false });
+  expect(tabState(view("reviewer", "child"), where, run)).toEqual({ viewing: true, kept: false });
+  expect(tabState(view("reviewer", "child", "other"), where, run).viewing).toBe(false);
+  expect(tabState(view("📌 reviewer", "pi"), where, run).kept).toBe(true);
+  const detached = { ...where, windowId: null };
+  const away = { label: "reviewer", placement: "detached" as const };
+  expect(tabState({}, detached, away, "reviewer")).toEqual({ viewing: false, kept: false });
+  expect(tabState({}, detached, away, "📌 reviewer").kept).toBe(true);
 });

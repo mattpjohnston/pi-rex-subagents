@@ -15,7 +15,7 @@ The extension has no roles, workflows, worktree management, or automatic retries
 
 ## Tabs
 
-Each subagent opens as a new tab in the parent's Rex session, named after its label, without taking focus. The extension never splits panes or switches your view. You can move a subagent's tab or split it with Rex's own controls. The extension tracks each subagent by its Rex block ID, which doesn't change when it moves, and looks up its current tab when it needs it.
+Each subagent opens as a new tab in the parent's Rex session, named after its label, without taking focus. With `placement: "float"` it opens instead as a floating layer over the right half of the parent's own tab, and with `"detached"` it starts as a tab and leaves it, running in no window until `/subagents go` brings it back as a split beside the pane you typed in. `subagents_next_waiting` brings back a waiting detached subagent the same way. A floating or detached subagent counts as viewed only while it is the focused pane of the active tab, and pinning or renaming its pane, not the tab, keeps it. The extension never splits panes or switches your view. You can move a subagent's tab or split it with Rex's own controls. The extension tracks each subagent by its Rex block ID, which doesn't change when it moves, and looks up its current tab when it needs it.
 
 Subagents go in the parent's session rather than a session of their own. Rex shows status dots on tabs, not on session names, so a subagent waiting for you shows up right under its parent. A session per parent also multiplies quickly.
 

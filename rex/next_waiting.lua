@@ -66,13 +66,29 @@ local function placed(block_id)
     return nil
   end
   local target = result.target
-  if target.kind ~= "block" or not target.session_id or not target.window_id or not target.block_id then
+  if target.kind ~= "block" or not target.session_id or not target.block_id then
     return nil
   end
   return target
 end
 
-local function next_waiting()
+-- A detached child is in no window. Bring it back as a split beside the pane the user is in,
+-- when that pane is in the child's session; otherwise leave it for another candidate.
+local function bring_back(target, anchor)
+  if not anchor then return nil end
+  local moved = rex.call("session.move_block", {
+    session_id = target.session_id,
+    block_id = target.block_id,
+    anchor_block_id = anchor,
+  })
+  if not moved then return nil end
+  local again = placed(target.block_id)
+  if again and again.window_id then return again end
+  return nil
+end
+
+local function next_waiting(ctx)
+  local anchor = (ctx and ctx.block_id) or (rex.args and rex.args.anchor)
   local state = state_dir()
   local paths, err = reservation_paths(state .. "/reservations")
   if not paths then return {status = "error", error = tostring(err)} end
@@ -99,6 +115,7 @@ local function next_waiting()
   for _, run in ipairs(candidates) do
     local target, resolve_err = placed(run.rex.blockId)
     if resolve_err then return {status = "error", error = tostring(resolve_err), recordsRead = count} end
+    if target and not target.window_id then target = bring_back(target, anchor) end
     if target then
       if not attached then
         local ok, attach_err = rex.call("session.attach_all", {event_scope = "session"})

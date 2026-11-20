@@ -55,7 +55,17 @@ export const ProcessObservation = Type.Union([
   Type.Object({ state: Type.Literal("unknown") }, object),
 ]);
 export type ProcessObservation = Static<typeof ProcessObservation>;
-export const Location = Type.Object({ sessionId: text, windowId: text, blockId: text }, object);
+/** windowId is null while the block is detached: running, but in no window. */
+export const Location = Type.Object(
+  { sessionId: text, windowId: Type.Union([text, Type.Null()]), blockId: text },
+  object,
+);
+export const Placement = Type.Union([
+  Type.Literal("tab"),
+  Type.Literal("float"),
+  Type.Literal("detached"),
+]);
+export type Placement = Static<typeof Placement>;
 export type Location = Static<typeof Location>;
 export const Waiting = Type.Object(
   {
@@ -101,6 +111,8 @@ export const RunRecord = Type.Object(
     cwd: text,
     checkoutRoot: text,
     access: Type.Union([Type.Literal("read"), Type.Literal("inspect"), Type.Literal("write")]),
+    /** Where the child opened. Absent in records written before placement existed: a tab. */
+    placement: Type.Optional(Placement),
     requested: Settings,
     effective: Settings,
     background: Type.Boolean(),

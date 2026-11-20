@@ -41,6 +41,12 @@ export async function requireLocalRex(): Promise<void> {
     );
 }
 
+/** A detached block keeps running in no window; anything else must name its window. */
+function windowOf(block: Record<string, unknown>): string | null {
+  if (typeof block.window_id === "string") return block.window_id;
+  if (block.placement === "detached") return null;
+  throw new Error("Invalid Rex window ID");
+}
 /** Resolve by stable block ID, including after moves to another session. No label fallback. */
 export async function locate(blockId: string, hint?: Location): Promise<Location | null> {
   if (hint) {
@@ -48,8 +54,8 @@ export async function locate(blockId: string, hint?: Location): Promise<Location
     if (direct.code === 0) {
       const data = object(JSON.parse(direct.stdout));
       const block = object(data.block);
-      if (typeof data.session_id === "string" && typeof block.window_id === "string")
-        return { sessionId: data.session_id, windowId: block.window_id, blockId };
+      if (typeof data.session_id === "string")
+        return { sessionId: data.session_id, windowId: windowOf(block), blockId };
       throw new Error("Invalid Rex block location");
     }
     if (direct.code !== 3) throw new Error(`Rex unreachable or ambiguous: exit ${direct.code}`);
@@ -64,9 +70,7 @@ export async function locate(blockId: string, hint?: Location): Promise<Location
     if (reply.code === 3) continue;
     if (reply.code !== 0) throw new Error(`Rex unreachable or ambiguous: exit ${reply.code}`);
     const data = object(JSON.parse(reply.stdout));
-    const block = object(data.block);
-    if (typeof block.window_id !== "string") throw new Error("Invalid Rex window ID");
-    return { sessionId: session.session_id, windowId: block.window_id, blockId };
+    return { sessionId: session.session_id, windowId: windowOf(object(data.block)), blockId };
   }
   return null;
 }
@@ -212,4 +216,21 @@ export async function screenTail(location: Location, lines = 15): Promise<string
   } catch {
     return null;
   }
+}
+
+/** A block's own label, which marks a floating or detached child as kept when it changes. */
+export async function labelBlock(location: Location, label: string): Promise<void> {
+  await rexJson([
+    "api",
+    "call",
+    "session.set_block_label",
+    JSON.stringify({ session_id: location.sessionId, block_id: location.blockId, label }),
+  ]);
+}
+export async function blockLabel(location: Location): Promise<string | undefined> {
+  const data = object(
+    await rexJson(["block", "inspect", "-s", location.sessionId, location.blockId, "--json"]),
+  );
+  const label = object(data.block).label;
+  return typeof label === "string" ? label : undefined;
 }

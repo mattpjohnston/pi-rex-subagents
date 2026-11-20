@@ -50,6 +50,7 @@ Ask Pi to hand work to a subagent. It calls the `subagent` tool with these input
 | `background`                    | If `true`, the call returns at once and the result arrives later as a message.                 |
 | `continueFrom`                  | ID of an earlier, finished run. The new subagent starts with a copy of that conversation.      |
 | `provider`, `model`, `thinking` | Model settings. Anything you leave out is copied from the parent.                              |
+| `placement`                     | `tab` (default), `float` over the parent's tab, or `detached` to run in no tab at all.         |
 
 Each subagent opens in a new tab in your Rex session, without switching to it. Open the tab to watch. Press Enter to send it a message and Escape to interrupt it, as in any Pi session.
 

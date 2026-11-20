@@ -72,6 +72,7 @@ export default async function autoclose(): Promise<void> {
         ),
       );
     };
+    assert(held.rex.windowId);
     await select(held.rex.windowId);
     const activeNow = async () =>
       object(success(await run.rex.inspectSession(viewedLaunch.parent.sessionId)).data)

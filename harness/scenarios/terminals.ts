@@ -148,7 +148,7 @@ export default async function terminals(): Promise<void> {
     await until("moved current location appears in status", async () =>
       success(await run.rex.capture(parent.sessionId, parent.blockId))
         .stdout.replace(/\s/g, "")
-        .includes(moved.windowId),
+        .includes(String(moved.windowId)),
     );
     success(
       await run.rex.command(["block", "close", "-s", parent.sessionId, manual.rex.blockId], false),
@@ -228,7 +228,7 @@ export default async function terminals(): Promise<void> {
       success(await run.rex.command(["window", "ls", "-s", parent.sessionId, "--json"])).data,
     );
     assert(
-      !JSON.stringify(windows).includes(single.rex.windowId),
+      !JSON.stringify(windows).includes(String(single.rex.windowId)),
       "Last-block close removes single-child tab",
     );
     for (const item of artifacts) {

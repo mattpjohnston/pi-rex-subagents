@@ -8,6 +8,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   Thinking,
   ChildEvent,
+  Placement,
   atomicWrite,
   errorText,
   isMissing,
@@ -24,6 +25,7 @@ import {
   transition,
   writeRun,
   type CheckoutReport,
+  type Location,
   type ResultFile,
   RunRecord,
   initialActivity,
@@ -42,6 +44,7 @@ import {
   locate,
   closeBlock,
   observeProcess,
+  labelBlock,
   requireLocalRex,
   rexJson,
   screenTail,
@@ -62,6 +65,7 @@ export const LaunchInput = Type.Object(
     provider: Type.Optional(Type.String()),
     model: Type.Optional(Type.String()),
     thinking: Type.Optional(Thinking),
+    placement: Type.Optional(Placement),
   },
   { additionalProperties: false },
 );
@@ -99,6 +103,7 @@ export async function prepareRun(
     ctx.modelRegistry.find(provider, id),
   );
   const access = input.access ?? (parentRun?.access === "inspect" ? "inspect" : "write");
+  if (input.placement && input.placement !== "tab") parentBlock();
   if (access === "read") await requireReadProvider(settings.effective);
   const cwd = await workingDirectory(ctx.cwd, input.cwd);
   const root = await checkoutRoot(cwd);
@@ -136,6 +141,7 @@ export async function prepareRun(
     cwd,
     checkoutRoot: root,
     access,
+    placement: input.placement ?? "tab",
     requested: settings.requested,
     effective: settings.effective,
     background: input.background === true,
@@ -484,6 +490,94 @@ async function savedBefore(run: RunRecord): Promise<Fingerprint | undefined> {
   }
   return undefined;
 }
+/** Where a floating child sits in the parent's window: the right half, below the top edge. */
+const FLOAT_BOUNDS = [0.5, 0.04, 0.49, 0.92];
+/**
+ * Asks Rex for the child's terminal, without taking focus. A tab is a new window; a floating
+ * child is a layer over the parent's own window; a detached child starts as a tab and leaves
+ * it, which closes the tab. The one call that starts the process is never retried.
+ */
+async function openChild(run: RunRecord, argv: string[]): Promise<Location> {
+  const session = process.env.REX_SESSION ?? "";
+  if (run.placement === "float") {
+    const parent = await locate(parentBlock(), { sessionId: session, windowId: null, blockId: "" });
+    if (!parent?.windowId) throw new Error("The parent's pane is not in a window");
+    const reply = object(
+      await rexJson([
+        "api",
+        "call",
+        "session.new_layer",
+        JSON.stringify({
+          session_id: session,
+          window_id: parent.windowId,
+          bounds: FLOAT_BOUNDS,
+          focus: false,
+          layout: {
+            block: {
+              flavor: "com.superlogical.terminal.shell",
+              label: run.label,
+              options: {
+                shell: "none",
+                command: argv,
+                cwd: run.cwd,
+                exit: { on_completion: false },
+                // rex window new hands the caller's PATH to the terminal; this API needs it
+                // given, or the pi launcher can't find node.
+                path_prepend: (process.env.PATH ?? "").split(delimiter).filter(Boolean),
+              },
+            },
+          },
+        }),
+      ]),
+    );
+    const block = Array.isArray(reply.block_ids) ? reply.block_ids[0] : undefined;
+    if (typeof block !== "string") throw new Error("Invalid Rex launch reply");
+    return { sessionId: session, windowId: parent.windowId, blockId: block };
+  }
+  const reply = object(
+    await rexJson([
+      "window",
+      "new",
+      "-s",
+      session,
+      run.label,
+      "--focus=false",
+      "-c",
+      run.cwd,
+      "--keep-open",
+      "--shell",
+      "none",
+      "--json",
+      "--",
+      ...argv,
+    ]),
+  );
+  const block = Array.isArray(reply.block_ids) ? reply.block_ids[0] : undefined;
+  if (typeof reply.window_id !== "string" || typeof block !== "string")
+    throw new Error("Invalid Rex launch reply");
+  const opened = { sessionId: session, windowId: reply.window_id, blockId: block };
+  if (run.placement !== "detached") return opened;
+  // The child is running now, so a failure here leaves it in its tab rather than failing it.
+  try {
+    await rexJson([
+      "api",
+      "call",
+      "session.detach_block",
+      JSON.stringify({ session_id: session, block_id: block }),
+    ]);
+    await labelBlock(opened, run.label);
+    return { ...opened, windowId: null };
+  } catch (error) {
+    run.diagnostic = `Opened as a tab: Rex didn't detach it (${errorText(error)})`;
+    return opened;
+  }
+}
+/** The parent's own pane, which floating children cover and detached children come back beside. */
+export function parentBlock(): string {
+  const block = process.env.REX_BLOCK;
+  if (!block) throw new Error("This needs REX_BLOCK, which Rex sets in each terminal");
+  return block;
+}
 /** Pi prints why it couldn't start, such as an unknown model, on screen and nowhere else. */
 async function startupFailure(run: RunRecord, what: string): Promise<string> {
   const where = run.location ?? run.rex;
@@ -626,38 +720,10 @@ async function watch(
     });
     launchWaits().set(run.id, launchDone);
     try {
-      let launch: unknown;
       try {
         // Never retry: timeout or a malformed reply can mean the child was launched.
         await atomicWrite(launchMarker(run), { askedAt: Date.now() });
-        launch = await rexJson([
-          "window",
-          "new",
-          "-s",
-          process.env.REX_SESSION ?? "",
-          run.label,
-          "--focus=false",
-          "-c",
-          run.cwd,
-          "--keep-open",
-          "--shell",
-          "none",
-          "--json",
-          "--",
-          ...argv,
-        ]);
-        const reply = object(launch);
-        if (
-          typeof reply.window_id !== "string" ||
-          !Array.isArray(reply.block_ids) ||
-          typeof reply.block_ids[0] !== "string"
-        )
-          throw new Error("Invalid Rex launch reply");
-        run.rex = {
-          sessionId: process.env.REX_SESSION ?? "",
-          windowId: reply.window_id,
-          blockId: reply.block_ids[0],
-        };
+        run.rex = await openChild(run, argv);
         run.location = { ...run.rex };
         const cancelled = await withProtocolLock(run.paths.lock, async () => {
           const winner = await readClaim(run.paths.claim);

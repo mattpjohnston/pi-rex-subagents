@@ -2,13 +2,46 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CONTROL_LIST_LIMIT, cancelControlled, ownedRuns, treeOrder } from "./control.ts";
 import { shouldAppend, type TransitionView } from "./delivery.ts";
-import { isTerminal, listRuns, type RunRecord } from "./records.ts";
+import { isTerminal, listRuns, type Location, type RunRecord } from "./records.ts";
+import { parentBlock } from "./launch.ts";
 import { locate, object, rexJson } from "./rex.ts";
 import { cappedText } from "./results.ts";
 import { releaseRefusal, releaseRun } from "./admission.ts";
 import { readClaim } from "./claims.ts";
 import { clearEligible, dismiss, keep, lastKnownTab } from "./terminals.ts";
 
+/**
+ * Brings a child into view. A detached child has no window, so it comes back as a split beside
+ * the pane this command runs in; a floating one is focused over its window.
+ */
+async function showChild(location: Location): Promise<void> {
+  if (location.windowId === null) {
+    await rexJson([
+      "api",
+      "call",
+      "session.move_block",
+      JSON.stringify({
+        session_id: location.sessionId,
+        block_id: location.blockId,
+        anchor_block_id: parentBlock(),
+      }),
+    ]);
+    return;
+  }
+  await rexJson([
+    "do",
+    "session.select",
+    `session_id=${location.sessionId}`,
+    `window_id=${location.windowId}`,
+    "--json",
+  ]);
+  await rexJson([
+    "api",
+    "call",
+    "session.focus_block",
+    JSON.stringify({ session_id: location.sessionId, block_id: location.blockId }),
+  ]);
+}
 export const live = (run: RunRecord) =>
   !isTerminal(run.lifecycle) || run.process.state !== "exited";
 export function statusLine(run: RunRecord): string {
@@ -127,6 +160,8 @@ export function registerSubagentsCommand(
           await rexJson([
             "do",
             fileURLToPath(new URL("../rex/next_waiting.lua", import.meta.url)),
+            // A detached child comes back beside this pane.
+            ...(process.env.REX_BLOCK ? [`anchor=${process.env.REX_BLOCK}`] : []),
             "--json",
           ]),
         );
@@ -155,13 +190,7 @@ export function registerSubagentsCommand(
           ctx.ui.notify("Child block no longer exists; artifacts are retained", "warning");
           return;
         }
-        await rexJson([
-          "do",
-          "session.select",
-          `session_id=${location.sessionId}`,
-          `window_id=${location.windowId}`,
-          "--json",
-        ]);
+        await showChild(location);
         ctx.ui.notify(`Selected subagent ${matches[0].label}`, "info");
         return;
       }
