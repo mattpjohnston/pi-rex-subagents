@@ -26,6 +26,7 @@ import {
   type RexEvents,
 } from "./rex.ts";
 import {
+  Access,
   ensurePrivateDir,
   errorText,
   isTakenOver,
@@ -46,14 +47,15 @@ import { createWorktree, findRepoRoot, finishWorktree } from "./worktree.ts";
 
 export const RESULTS_TYPE = "subagent-results";
 export const COALESCE_MS = 2_000;
+const INLINE_TASK_MAX_BYTES = 32_768;
 
 export const LaunchInput = Type.Object(
   {
     task: Type.String({ minLength: 1 }),
     label: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })),
     cwd: Type.Optional(Type.String()),
+    access: Type.Optional(Access),
     worktree: Type.Optional(Type.Boolean()),
-    readOnly: Type.Optional(Type.Boolean()),
     background: Type.Optional(Type.Boolean()),
     placement: Type.Optional(Placement),
     continueFrom: Type.Optional(Type.String()),
@@ -120,8 +122,6 @@ export async function resolveWorkingDir(parentCwd: string, requested?: string): 
   return target;
 }
 
-const INLINE_TASK_MAX_BYTES = 32_768;
-
 export async function buildChildArgv(
   run: RunRecord,
   entry: string,
@@ -145,10 +145,13 @@ export async function buildChildArgv(
     "--name",
     run.label,
   ];
-  if (run.readOnly) {
+  if (run.access === "read") {
     // Keep extensions loaded so custom providers (e.g. claude-bridge) still work,
     // while restricting callable tools to read-only built-ins and disabling MCP.
     args.push("--tools", "read,grep,find,ls", "--no-mcp");
+  } else if (run.access === "inspect") {
+    // Keep bash, MCP, and extensions for read-only-by-intent investigations (e.g. why/reflect).
+    args.push("--exclude-tools", "edit,write");
   }
   args.push("-e", entry);
   if (continueSessionFile) args.push("--fork", continueSessionFile);
@@ -278,6 +281,19 @@ export class ConcurrencyGate {
   private active = 0;
   private readonly queue: (() => void)[] = [];
 
+  /** Accounts for an already-running child reattached on reload/resume. */
+  holdExisting(): () => void {
+    this.active += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.active -= 1;
+      const next = this.queue.shift();
+      next?.();
+    };
+  }
+
   async acquire(maxConcurrent: number, signal?: AbortSignal): Promise<() => void> {
     if (signal?.aborted) throw new Error("Aborted before launch");
     if (this.active >= maxConcurrent) {
@@ -295,15 +311,7 @@ export class ConcurrencyGate {
         signal?.addEventListener("abort", onAbort, { once: true });
       });
     }
-    this.active += 1;
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      this.active -= 1;
-      const next = this.queue.shift();
-      next?.();
-    };
+    return this.holdExisting();
   }
 }
 
@@ -316,6 +324,8 @@ export interface ActiveRun {
   run: RunRecord;
   done: Promise<RunOutcome>;
   cancel: () => Promise<RunRecord["status"]>;
+  /** Stops local watchers/timers without cancelling the child process (for reload/switch). */
+  detach: () => void;
 }
 
 /**
@@ -329,11 +339,13 @@ export async function launchSubagent(options: {
   events: RexEvents;
   gate: ConcurrencyGate;
   liveRuns: Map<string, ActiveRun>;
+  reservedRepos: Map<string, { id: string; label: string }>;
   signal?: AbortSignal;
   onChange?: (run: RunRecord) => void;
   onWaiting?: (run: RunRecord) => void;
 }): Promise<ActiveRun> {
-  const { input, ctx, entry, events, gate, liveRuns, signal, onChange, onWaiting } = options;
+  const { input, ctx, entry, events, gate, liveRuns, reservedRepos, signal, onChange, onWaiting } =
+    options;
   if (!input.task.trim()) throw new Error("Subagent task must not be empty");
   const sessionId = process.env.REX_SESSION;
   if (!sessionId) throw new Error("REX_SESSION is not set; start Pi inside Rex to use subagents");
@@ -346,7 +358,7 @@ export async function launchSubagent(options: {
   const model = resolveModelSettings(parentModel, input, (p, id) => ctx.modelRegistry.find(p, id));
   const requestedCwd = await resolveWorkingDir(ctx.cwd, input.cwd);
   const baseRepo = await findRepoRoot(requestedCwd);
-  const readOnly = input.readOnly === true;
+  const runAccess = input.access ?? "write";
 
   let continueSessionFile: string | undefined;
   if (input.continueFrom) {
@@ -358,64 +370,76 @@ export async function launchSubagent(options: {
     continueSessionFile = sessionFile;
   }
 
-  // Advisory same-repo writer check: prevent accidental clobbering without distributed locks.
-  if (!readOnly && !input.worktree && baseRepo) {
-    for (const other of liveRuns.values()) {
-      if (!other.run.readOnly && !other.run.worktree && other.run.repoRoot === baseRepo) {
-        throw new Error(
-          `Another writer (${other.run.label}, ${other.run.id}) is already running in ${baseRepo}. Pass worktree: true to run parallel writers in isolated worktrees, or readOnly: true for research.`,
-        );
-      }
-    }
-  }
-
   const id = randomBytes(10).toString("hex");
   const label = input.label?.trim() || `sub-${id.slice(0, 6)}`;
   const placement = input.placement ?? config.placement;
   const keepOpen = config.keepOpen;
 
-  let effectiveCwd = requestedCwd;
-  let worktree: RunRecord["worktree"];
-  if (input.worktree) {
-    if (!baseRepo) throw new Error(`worktree: true requires a git repository (${requestedCwd})`);
-    const created = await createWorktree(baseRepo, requestedCwd, label, id);
-    worktree = created.worktree;
-    effectiveCwd = created.cwd;
+  // Synchronous reservation eliminates the parallel-call TOCTOU race for non-worktree writers.
+  let reservedRepoKey: string | null = null;
+  if (runAccess === "write" && !input.worktree && baseRepo) {
+    const existing = reservedRepos.get(baseRepo);
+    if (existing) {
+      throw new Error(
+        `Another writer (${existing.label}, ${existing.id}) is already running in ${baseRepo}. Pass worktree: true for parallel writers, or access: "inspect" / "read" for non-editing work.`,
+      );
+    }
+    reservedRepos.set(baseRepo, { id, label });
+    reservedRepoKey = baseRepo;
   }
 
-  const paths = runPaths(id);
-  await ensurePrivateDir(stateDir());
-  await ensurePrivateDir(paths.dir);
-  await ensurePrivateDir(paths.sessionDir);
-  await writeFile(paths.task, `# Delegated task\n\n${input.task}\n`, { mode: 0o600 });
-
-  const run: RunRecord = {
-    version: 2,
-    id,
-    label,
-    parentSessionId: ctx.sessionManager.getSessionId(),
-    cwd: effectiveCwd,
-    repoRoot: worktree ? worktree.path : baseRepo,
-    readOnly,
-    background: input.background === true,
-    placement,
-    keepOpen,
-    model,
-    continueFrom: input.continueFrom ?? null,
-    ...(worktree ? { worktree } : {}),
-    rex: null,
-    status: "queued",
-    waiting: null,
-    sessionFile: null,
-    diagnostic: null,
-    createdAt: Date.now(),
-    finishedAt: null,
+  const releaseRepo = () => {
+    if (reservedRepoKey && reservedRepos.get(reservedRepoKey)?.id === id) {
+      reservedRepos.delete(reservedRepoKey);
+    }
   };
-  await writeRun(run);
 
+  let effectiveCwd = requestedCwd;
+  let worktree: RunRecord["worktree"];
   let releaseSlot: (() => void) | undefined;
+  let run: RunRecord | undefined;
+
   try {
+    if (input.worktree) {
+      if (!baseRepo) throw new Error(`worktree: true requires a git repository (${requestedCwd})`);
+      const created = await createWorktree(baseRepo, requestedCwd, label, id);
+      worktree = created.worktree;
+      effectiveCwd = created.cwd;
+    }
+
+    const paths = runPaths(id);
+    await ensurePrivateDir(stateDir());
+    await ensurePrivateDir(paths.dir);
+    await ensurePrivateDir(paths.sessionDir);
+    await writeFile(paths.task, `# Delegated task\n\n${input.task}\n`, { mode: 0o600 });
+
+    run = {
+      version: 2,
+      id,
+      label,
+      parentSessionId: ctx.sessionManager.getSessionId(),
+      cwd: effectiveCwd,
+      repoRoot: worktree ? worktree.path : baseRepo,
+      access: runAccess,
+      background: input.background === true,
+      placement,
+      keepOpen,
+      model,
+      continueFrom: input.continueFrom ?? null,
+      ...(worktree ? { worktree } : {}),
+      rex: null,
+      status: "queued",
+      waiting: null,
+      sessionFile: null,
+      diagnostic: null,
+      createdAt: Date.now(),
+      finishedAt: null,
+    };
+    await writeRun(run);
+
     releaseSlot = await gate.acquire(config.maxConcurrent, signal);
+    if (signal?.aborted) throw new Error("Aborted before launch");
+
     const argv = await buildChildArgv(run, entry, input.task, continueSessionFile);
     run.rex = await openPane({
       sessionId,
@@ -430,11 +454,16 @@ export async function launchSubagent(options: {
     await writeRun(run);
   } catch (error) {
     releaseSlot?.();
-    if (run.worktree) run.worktree = await finishWorktree(run.worktree);
-    run.status = signal?.aborted ? "cancelled" : "failed";
-    run.diagnostic = errorText(error);
-    run.finishedAt = Date.now();
-    await writeRun(run);
+    releaseRepo();
+    if (run) {
+      if (run.worktree) run.worktree = await finishWorktree(run.worktree);
+      run.status = signal?.aborted ? "cancelled" : "failed";
+      run.diagnostic = errorText(error);
+      run.finishedAt = Date.now();
+      await writeRun(run);
+    } else if (worktree) {
+      await finishWorktree(worktree);
+    }
     throw error;
   }
 
@@ -443,26 +472,31 @@ export async function launchSubagent(options: {
     events,
     liveRuns,
     releaseSlot,
+    releaseRepo,
     signal: run.background ? undefined : signal,
     onChange,
     onWaiting,
   });
 }
 
-/** Attaches event-driven watching to an already-started run (used on launch and parent reload). */
+/** Attaches event-driven watching to an already-started run (used on launch and reload/resume). */
 export function attachToRun(options: {
   run: RunRecord;
   events: RexEvents;
   liveRuns: Map<string, ActiveRun>;
   releaseSlot?: () => void;
+  releaseRepo?: () => void;
   signal?: AbortSignal;
   onChange?: (run: RunRecord) => void;
   onWaiting?: (run: RunRecord) => void;
 }): ActiveRun {
-  const { run, events, liveRuns, releaseSlot, signal, onChange, onWaiting } = options;
+  const { run, events, liveRuns, releaseSlot, releaseRepo, signal, onChange, onWaiting } = options;
   const blockId = run.rex?.blockId;
   let cancelled = false;
   let finished = false;
+  let checking = false;
+  let recheckNeeded = false;
+  let cancelPromise: Promise<RunRecord["status"]> | undefined;
   let settleDone: (outcome: RunOutcome) => void = () => undefined;
   const done = new Promise<RunOutcome>((resolve) => {
     settleDone = resolve;
@@ -483,7 +517,14 @@ export function attachToRun(options: {
     }
     signal?.removeEventListener("abort", onAbort);
     liveRuns.delete(run.id);
+    releaseRepo?.();
     releaseSlot?.();
+  };
+
+  const detach = () => {
+    if (finished) return;
+    finished = true;
+    cleanup();
   };
 
   const finalize = async (forced?: {
@@ -499,6 +540,11 @@ export function attachToRun(options: {
     const taken = await isTakenOver(run.id);
     run.waiting = null;
 
+    if (result && !taken) {
+      run.sessionFile = result.sessionFile;
+      run.model = result.model;
+    }
+
     if (taken && !result) {
       run.status = "taken_over";
     } else if (forced) {
@@ -506,8 +552,6 @@ export function attachToRun(options: {
       if (forced.diagnostic) run.diagnostic = forced.diagnostic;
     } else if (result) {
       run.status = result.outcome;
-      run.sessionFile = result.sessionFile;
-      run.model = result.model;
     } else if (cancelled) {
       run.status = "cancelled";
     } else {
@@ -529,29 +573,42 @@ export function attachToRun(options: {
 
   const checkDiskAndProcess = async () => {
     if (finished) return;
-    if (await isTakenOver(run.id)) {
-      await finalize({ status: "taken_over", result: null });
+    if (checking) {
+      recheckNeeded = true;
       return;
     }
-    const result = await readResult(run.id);
-    if (result) {
-      // Give Pi a moment to finish exiting if it just wrote result.json.
-      if (run.rex) {
-        const deadline = Date.now() + 3_000;
-        while (Date.now() < deadline) {
-          const obs = await observeProcess(run.rex);
-          if (obs.process.state === "exited") break;
-          await delay(150);
+    checking = true;
+    try {
+      do {
+        recheckNeeded = false;
+        if (finished) return;
+        if (await isTakenOver(run.id)) {
+          await finalize({ status: "taken_over", result: null });
+          return;
         }
-      }
-      await finalize({ status: result.outcome, result });
-      return;
-    }
-    if (run.rex) {
-      const obs = await observeProcess(run.rex);
-      if (obs.process.state === "exited") {
-        await finalize();
-      }
+        const result = await readResult(run.id);
+        if (result) {
+          if (run.rex) {
+            const deadline = Date.now() + 3_000;
+            while (Date.now() < deadline && !finished) {
+              const obs = await observeProcess(run.rex);
+              if (obs.process.state === "exited") break;
+              await delay(150);
+            }
+          }
+          await finalize({ status: result.outcome, result });
+          return;
+        }
+        if (run.rex) {
+          const obs = await observeProcess(run.rex);
+          if (obs.process.state === "exited") {
+            await finalize();
+            return;
+          }
+        }
+      } while (recheckNeeded && !finished);
+    } finally {
+      checking = false;
     }
   };
 
@@ -592,37 +649,52 @@ export function attachToRun(options: {
     }
   };
 
-  const cancelRun = async (): Promise<RunRecord["status"]> => {
-    if (finished) return run.status;
-    if (await isTakenOver(run.id)) {
-      await finalize({ status: "taken_over", result: null });
-      return "taken_over";
-    }
-    cancelled = true;
-    if (run.rex) {
-      const obs = await observeProcess(run.rex);
-      if (obs.process.state === "live" && obs.process.pid) {
-        let signalled = false;
-        try {
-          process.kill(obs.process.pid, "SIGTERM");
-          signalled = true;
-        } catch {
-          // Process already exited.
-        }
-        if (signalled) {
-          const deadline = Date.now() + 5_000;
-          while (Date.now() < deadline) {
-            if ((await observeProcess(run.rex)).process.state === "exited") break;
-            await delay(200);
+  const cancelRun = (): Promise<RunRecord["status"]> => {
+    if (cancelPromise) return cancelPromise;
+    cancelPromise = (async () => {
+      if (finished) return run.status;
+      if (await isTakenOver(run.id)) {
+        await finalize({ status: "taken_over", result: null });
+        return "taken_over";
+      }
+      cancelled = true;
+      if (run.rex) {
+        const obs = await observeProcess(run.rex);
+        if (obs.process.state === "live" && obs.process.pid) {
+          let signalled = false;
+          try {
+            process.kill(obs.process.pid, "SIGTERM");
+            signalled = true;
+          } catch {
+            // Process already exited.
+          }
+          if (signalled) {
+            let exited = false;
+            const deadline = Date.now() + 5_000;
+            while (Date.now() < deadline) {
+              if ((await observeProcess(run.rex)).process.state === "exited") {
+                exited = true;
+                break;
+              }
+              await delay(200);
+            }
+            if (!exited) {
+              try {
+                process.kill(obs.process.pid, "SIGKILL");
+              } catch {
+                // Already exited.
+              }
+            }
           }
         }
+        if (!run.keepOpen && obs.location) {
+          await closeBlock(obs.location).catch(() => undefined);
+        }
       }
-      if (!run.keepOpen) {
-        await closeBlock(run.rex).catch(() => undefined);
-      }
-    }
-    await finalize({ status: "cancelled", result: null });
-    return "cancelled";
+      await finalize({ status: "cancelled", result: null });
+      return "cancelled";
+    })();
+    return cancelPromise;
   };
 
   const onAbort = () => {
@@ -638,7 +710,7 @@ export function attachToRun(options: {
       void checkDiskAndProcess();
     });
   } catch {
-    // Fallback interval still covers environments where fs.watch isn't available.
+    // Fallback interval covers environments where fs.watch isn't available.
   }
   // Lightweight safety check ONLY while this run is actively live (cleared immediately on exit).
   fallbackTimer = setInterval(() => {
@@ -646,9 +718,13 @@ export function attachToRun(options: {
   }, 1500);
   signal?.addEventListener("abort", onAbort, { once: true });
 
-  const handle: ActiveRun = { run, done, cancel: cancelRun };
+  const handle: ActiveRun = { run, done, cancel: cancelRun, detach };
   liveRuns.set(run.id, handle);
   onChange?.(run);
-  void checkDiskAndProcess();
+  if (signal?.aborted) {
+    void cancelRun();
+  } else {
+    void checkDiskAndProcess();
+  }
   return handle;
 }

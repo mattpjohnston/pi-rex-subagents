@@ -19,7 +19,7 @@ function makeRun(id: string, overrides: Partial<RunRecord> = {}): RunRecord {
     parentSessionId: "sess-1",
     cwd: "/tmp/repo",
     repoRoot: "/tmp/repo",
-    readOnly: false,
+    access: "write",
     background: true,
     placement: "tab",
     keepOpen: false,
@@ -149,12 +149,33 @@ describe("delivery & outcomes", () => {
     } as unknown as Theme;
 
     const callLines = renderSubagentCall(
-      { task: "Inspect auth flow\nMore details", label: "auth-check", readOnly: true },
+      { task: "Inspect auth flow\nMore details", label: "auth-check", access: "read" },
       theme,
       {} as never,
     ).render(80);
     expect(callLines[0]).toContain("subagent auth-check [read]");
     expect(callLines[1]).toContain("Inspect auth flow");
+
+    // Narrow width check: no renderer line ever overflows width.
+    const narrowCall = renderSubagentCall(
+      {
+        task: "A very long task description line",
+        label: "x".repeat(80),
+        access: "inspect",
+        background: true,
+      },
+      theme,
+      {} as never,
+    ).render(30);
+    for (const line of narrowCall) expect(line.length).toBeLessThanOrEqual(30);
+
+    const narrowPartial = renderSubagentResult(
+      { content: [{ type: "text", text: "running ".repeat(20) }], details: { runId: "abc" } },
+      { expanded: false, isPartial: true },
+      theme,
+      {} as never,
+    ).render(30);
+    for (const line of narrowPartial) expect(line.length).toBeLessThanOrEqual(30);
 
     const collapsed = renderSubagentResult(
       {

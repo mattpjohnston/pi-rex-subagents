@@ -167,7 +167,7 @@ describe("launch", () => {
     );
   });
 
-  it("builds readOnly argv with --tools read,grep,find,ls --no-mcp (keeping extensions)", async () => {
+  it("builds read and inspect argvs while keeping extensions loaded", async () => {
     const run: RunRecord = {
       version: 2,
       id: "aaaaaaaaaaaaaaaaaaaa",
@@ -175,7 +175,7 @@ describe("launch", () => {
       parentSessionId: "sess-1",
       cwd: tmp,
       repoRoot: null,
-      readOnly: true,
+      access: "read",
       background: false,
       placement: "tab",
       keepOpen: false,
@@ -203,6 +203,15 @@ describe("launch", () => {
     expect(inlineArgv).toContain("/prev/session.jsonl");
     expect(inlineArgv.slice(-2)).toEqual(["--", "Check README.md"]);
 
+    const inspectArgv = await buildChildArgv(
+      { ...run, access: "inspect" },
+      "/ext/index.ts",
+      "Check git log",
+    );
+    expect(inspectArgv).toContain("--exclude-tools");
+    expect(inspectArgv).toContain("edit,write");
+    expect(inspectArgv).not.toContain("--no-mcp");
+
     const fileFallback = await buildChildArgv(run, "/ext/index.ts", "@weird-prefix");
     expect(fileFallback.at(-1)).toMatch(/^@.*task\.md$/);
   });
@@ -224,6 +233,7 @@ describe("launch", () => {
     process.env.PI_SUBAGENTS_REX = await createFakeRex(log, "complete");
     const gate = new ConcurrencyGate();
     const live = new Map<string, ActiveRun>();
+    const reservedRepos = new Map<string, { id: string; label: string }>();
     await mkdir(join(tmp, "state"), { recursive: true });
 
     for (const placement of ["tab", "split", "float", "detached"] as const) {
@@ -235,6 +245,7 @@ describe("launch", () => {
         events,
         gate,
         liveRuns: live,
+        reservedRepos,
       });
       await writeResult({
         version: 2,
@@ -249,6 +260,7 @@ describe("launch", () => {
       });
       const outcome = await handle.done;
       expect(outcome.run.status).toBe("completed");
+      expect(outcome.run.sessionFile).toBe("/tmp/s.jsonl");
       expect(outcome.result?.assistantText).toBe(`ok ${placement}`);
     }
 
@@ -269,13 +281,14 @@ describe("launch", () => {
       events,
       gate: new ConcurrencyGate(),
       liveRuns: new Map(),
+      reservedRepos: new Map(),
     });
     const outcome = await handle.done;
     expect(outcome.run.status).toBe("failed");
     expect(outcome.run.diagnostic).toContain("invalid API key");
   });
 
-  it("blocks duplicate non-worktree writers in the same repo and allows worktree writers", async () => {
+  it("blocks duplicate parallel writers in the same repo, while allowing inspect and worktree runs", async () => {
     const repo = join(tmp, "repo");
     await mkdir(repo);
     execFileSync("git", ["-C", repo, "init", "-q", "-b", "main"]);
@@ -289,17 +302,19 @@ describe("launch", () => {
     process.env.PI_SUBAGENTS_REX = await createFakeRex(log, "hold");
     const gate = new ConcurrencyGate();
     const live = new Map<string, ActiveRun>();
+    const reservedRepos = new Map<string, { id: string; label: string }>();
 
-    const first = await launchSubagent({
-      input: { task: "edit 1", label: "w1", background: true },
-      ctx: fakeCtx(repo),
-      entry: "/ext/index.ts",
-      events,
-      gate,
-      liveRuns: live,
-    });
-
-    await expect(
+    // Parallel non-worktree writers in the same repo: exactly one succeeds, one is refused.
+    const results = await Promise.allSettled([
+      launchSubagent({
+        input: { task: "edit 1", label: "w1", background: true },
+        ctx: fakeCtx(repo),
+        entry: "/ext/index.ts",
+        events,
+        gate,
+        liveRuns: live,
+        reservedRepos,
+      }),
       launchSubagent({
         input: { task: "edit 2", label: "w2", background: true },
         ctx: fakeCtx(repo),
@@ -307,8 +322,27 @@ describe("launch", () => {
         events,
         gate,
         liveRuns: live,
+        reservedRepos,
       }),
-    ).rejects.toThrow("worktree: true");
+    ]);
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    const rejected = results.filter((r) => r.status === "rejected");
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(String(rejected[0]?.reason)).toContain("worktree: true");
+    const first = fulfilled[0]?.value;
+    if (!first) throw new Error("Expected one writer launch to succeed");
+
+    // Parallel inspect subagents in the same repo succeed concurrently (needed for why/reflect).
+    const inspector = await launchSubagent({
+      input: { task: "check git log", label: "insp", access: "inspect", background: true },
+      ctx: fakeCtx(repo),
+      entry: "/ext/index.ts",
+      events,
+      gate,
+      liveRuns: live,
+      reservedRepos,
+    });
 
     // Worktree writer in same repo succeeds concurrently.
     const second = await launchSubagent({
@@ -318,13 +352,19 @@ describe("launch", () => {
       events,
       gate,
       liveRuns: live,
+      reservedRepos,
     });
     expect(second.run.worktree?.branch).toContain("subagent/w2-");
+
+    // Detaching stops local watches cleanly without cancelling the run.
+    inspector.detach();
+    expect(live.has(inspector.run.id)).toBe(false);
 
     // Taking over first leaves it taken_over; cancelling second cancels cleanly.
     await markTakenOver(first.run.id);
     expect(await first.cancel()).toBe("taken_over");
     expect(await second.cancel()).toBe("cancelled");
     await Promise.all([first.done, second.done]);
+    expect(reservedRepos.size).toBe(0);
   });
 });

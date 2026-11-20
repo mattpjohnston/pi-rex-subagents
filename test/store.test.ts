@@ -27,7 +27,7 @@ function sampleRun(overrides: Partial<RunRecord> = {}): RunRecord {
     parentSessionId: "sess-1",
     cwd: "/tmp",
     repoRoot: null,
-    readOnly: false,
+    access: "write",
     background: false,
     placement: "tab",
     keepOpen: false,
@@ -140,5 +140,6 @@ describe("store", () => {
     expect((await listRuns()).map((r) => r.id)).toEqual([recentDone.id, oldTakenOver.id, live.id]);
     await expect(readRun(oldDone.id)).rejects.toThrow();
     expect(runPaths(recentDone.id).run).toContain(recentDone.id);
+    expect(() => runPaths("../escape")).toThrow("Invalid run ID");
   });
 });

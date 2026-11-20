@@ -87,4 +87,18 @@ describe("worktree", () => {
     expect(cleaned.removedAt).toBeTypeOf("number");
     expect(existsSync(worktree.path)).toBe(false);
   });
+
+  it("keeps worktree and reports actual branch when subagent switches branches and commits", async () => {
+    const { worktree } = await createWorktree(repo, repo, "switcher", "5555555566666666");
+    git(worktree.path, ["checkout", "-q", "-b", "feat/custom-branch"]);
+    await writeFile(join(worktree.path, "sub", "hello.txt"), "switched\n");
+    git(worktree.path, ["add", "."]);
+    git(worktree.path, ["commit", "-q", "-m", "on custom branch"]);
+
+    const kept = await finishWorktree(worktree);
+    expect(kept.removedAt).toBeUndefined();
+    expect(kept.branch).toBe("feat/custom-branch");
+    expect(kept.keptReason).toContain("feat/custom-branch");
+    expect((await listSubagentWorktrees(repo)).some((w) => w.path === worktree.path)).toBe(true);
+  });
 });

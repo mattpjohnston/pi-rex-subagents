@@ -181,12 +181,13 @@ export async function openPane(options: {
     return { sessionId, windowId: parent.windowId, blockId };
   }
 
+  const safeLabel = label.startsWith("-") ? ` ${label}` : label;
   const reply = await rexJson([
     "window",
     "new",
     "-s",
     sessionId,
-    label,
+    safeLabel,
     "--focus=false",
     "-c",
     cwd,
@@ -265,32 +266,35 @@ export async function closeBlock(location: RexLocation): Promise<void> {
 }
 
 export async function focusBlock(location: RexLocation, anchorBlockId?: string): Promise<void> {
-  if (location.windowId === null) {
+  let target = location;
+  if (target.windowId === null) {
     if (!anchorBlockId) throw new Error("Detached pane needs REX_BLOCK to reattach as a split");
     await rexJson([
       "api",
       "call",
       "session.move_block",
       JSON.stringify({
-        session_id: location.sessionId,
-        block_id: location.blockId,
+        session_id: target.sessionId,
+        block_id: target.blockId,
         anchor_block_id: anchorBlockId,
       }),
     ]);
-    return;
+    const relocated = await locateBlock(target.blockId, target.sessionId);
+    if (!relocated?.windowId) return;
+    target = relocated;
   }
-  await rexCommand([
-    "do",
-    "session.select",
-    `session_id=${location.sessionId}`,
-    `window_id=${location.windowId}`,
-    "--json",
-  ]);
   await rexJson([
     "api",
     "call",
     "session.focus_block",
-    JSON.stringify({ session_id: location.sessionId, block_id: location.blockId }),
+    JSON.stringify({ session_id: target.sessionId, block_id: target.blockId }),
+  ]);
+  await rexCommand([
+    "do",
+    "session.select",
+    `session_id=${target.sessionId}`,
+    `window_id=${target.windowId}`,
+    "--json",
   ]);
 }
 
@@ -342,6 +346,12 @@ export class RexEvents {
 
   unwatch(blockId: string): void {
     this.watched.delete(blockId);
+    if (this.watched.size === 0) {
+      clearTimeout(this.reconnect);
+      this.reconnect = undefined;
+      this.child?.kill();
+      this.child = undefined;
+    }
   }
 
   private start(): void {

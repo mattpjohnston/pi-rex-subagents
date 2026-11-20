@@ -17,7 +17,7 @@ function sampleRun(id: string): RunRecord {
     parentSessionId: "sess-1",
     cwd: "/tmp",
     repoRoot: null,
-    readOnly: false,
+    access: "write",
     background: false,
     placement: "tab",
     keepOpen: false,

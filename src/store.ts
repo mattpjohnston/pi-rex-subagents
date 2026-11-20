@@ -27,6 +27,13 @@ export const Placement = Type.Union([
 ]);
 export type Placement = Static<typeof Placement>;
 
+export const Access = Type.Union([
+  Type.Literal("read"),
+  Type.Literal("inspect"),
+  Type.Literal("write"),
+]);
+export type Access = Static<typeof Access>;
+
 export const Outcome = Type.Union([
   Type.Literal("completed"),
   Type.Literal("failed"),
@@ -77,7 +84,7 @@ export const RunRecord = Type.Object(
     parentSessionId: nonEmpty,
     cwd: nonEmpty,
     repoRoot: Type.Union([nonEmpty, Type.Null()]),
-    readOnly: Type.Boolean(),
+    access: Access,
     background: Type.Boolean(),
     placement: Placement,
     keepOpen: Type.Boolean(),
@@ -161,7 +168,10 @@ export function stateDir(): string {
   return override ? resolve(override) : join(getAgentDir(), "subagents");
 }
 
+const RUN_ID_RE = /^[a-f0-9]{16,24}$/;
+
 export function runPaths(id: string): RunPaths {
+  if (!RUN_ID_RE.test(id)) throw new Error(`Invalid run ID: ${id}`);
   const dir = join(stateDir(), "runs", id);
   return {
     dir,

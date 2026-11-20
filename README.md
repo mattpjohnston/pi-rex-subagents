@@ -2,7 +2,7 @@
 
 A lightweight [Pi](https://pi.dev) extension that runs subagents as real, interactive Pi sessions inside [Rex](https://www.superlogical.com/rex).
 
-Each subagent opens quietly as an unfocused Rex tab in your current session. You can watch it live in Rex's sidebar, click in to type or steer, answer dialogs, or run `/subagent-takeover` to keep it as your own session. When it finishes, it writes its final answer to disk, Rex closes the tab cleanly, and the parent gets the structured result.
+Each subagent opens quietly as an unfocused Rex tab in your current session. You can watch it live in Rex's sidebar, type mid-turn to steer, answer dialogs, or run `/subagent-takeover` before interrupting with Escape to keep it as your own session. When it finishes, it writes its final answer to disk, Rex closes the tab cleanly, and the parent gets the structured result.
 
 ## Why this design
 
@@ -21,17 +21,17 @@ Each subagent opens quietly as an unfocused Rex tab in your current session. You
 
 ### `subagent`
 
-| Input                           | Meaning                                                                                                                                       |
-| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `task`                          | Complete, standalone task prompt (required).                                                                                                  |
-| `label`                         | Display name for the Rex tab.                                                                                                                 |
-| `cwd`                           | Working directory (defaults to parent's).                                                                                                     |
-| `worktree`                      | Create an isolated git worktree at `<repo>.worktrees/<label>-<id>` on branch `subagent/<label>-<id>`.                                         |
-| `readOnly`                      | Restrict tools to `read,grep,find,ls` with `--no-mcp` (keeps extensions/custom providers loaded).                                             |
-| `background`                    | Return immediately so you can keep chatting while a long task runs; finished results arrive cleanly in-loop or coalesced when idle.           |
-| `placement`                     | Optional `"tab"` (default), `"split"`, `"float"`, or `"detached"` — only set when you explicitly ask for that layout (always closes on exit). |
-| `continueFrom`                  | Fork a previous finished run's saved session (`--fork`).                                                                                      |
-| `provider`, `model`, `thinking` | Optional overrides (defaults inherited from parent).                                                                                          |
+| Input                           | Meaning                                                                                                                                                                                                                    |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `task`                          | Complete, standalone task prompt (required).                                                                                                                                                                               |
+| `label`                         | Display name for the Rex tab.                                                                                                                                                                                              |
+| `cwd`                           | Working directory (defaults to parent's).                                                                                                                                                                                  |
+| `worktree`                      | Create an isolated git worktree at `<repo>.worktrees/<label>-<id>` on branch `subagent/<label>-<id>`.                                                                                                                      |
+| `access`                        | `"write"` (default, full tools), `"inspect"` (full tools including bash/MCP except `edit`/`write`; runs in parallel freely), or `"read"` (`read,grep,find,ls` only, `--no-mcp`; keeps extensions/custom providers loaded). |
+| `background`                    | Return immediately so you can keep chatting while a long task runs; finished results arrive cleanly in-loop or coalesced when idle.                                                                                        |
+| `placement`                     | Optional `"tab"` (default), `"split"`, `"float"`, or `"detached"` — only set when you explicitly ask for that layout (always closes on exit).                                                                              |
+| `continueFrom`                  | Fork a previous finished run's saved session (`--fork`).                                                                                                                                                                   |
+| `provider`, `model`, `thinking` | Optional overrides (defaults inherited from parent).                                                                                                                                                                       |
 
 ### `subagent_control`
 

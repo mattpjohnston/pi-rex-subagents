@@ -4,6 +4,7 @@ import type {
   ExtensionAPI,
   ExtensionContext,
   MessageRenderer,
+  SessionBoundaryDraft,
   Theme,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
@@ -36,6 +37,8 @@ import {
 
 const ENTRY = fileURLToPath(import.meta.url);
 const RUNTIME_CHANNEL = "pi-rex-subagents:runtime";
+// eslint-disable-next-line no-control-regex
+const ANSI_RE = /\x1b\[[0-9;]*m/g;
 
 interface ResultsDetails {
   runIds: string[];
@@ -46,7 +49,7 @@ export interface SubagentToolDetails {
   runId: string;
   label?: string;
   status?: RunRecord["status"];
-  mode?: "read" | "worktree" | "write";
+  mode?: "read" | "inspect" | "worktree" | "write";
   background?: boolean;
   elapsedMs?: number;
   worktreeBranch?: string;
@@ -81,20 +84,78 @@ function claimRuntime(events: ExtensionAPI["events"]): boolean {
   return true;
 }
 
-function wrapPlain(text: string, maxWidth: number): string[] {
-  const width = Math.max(10, maxWidth);
+/** Approximate terminal cell width for plain text (conservative for wide chars/emoji). */
+function charWidth(codePoint: number): number {
+  if (codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)) return 0;
+  if (
+    codePoint >= 0x1100 &&
+    (codePoint <= 0x115f ||
+      codePoint === 0x2329 ||
+      codePoint === 0x232a ||
+      (codePoint >= 0x2e80 && codePoint <= 0xa4cf && codePoint !== 0x303f) ||
+      (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
+      (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
+      (codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
+      (codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
+      (codePoint >= 0xff00 && codePoint <= 0xff60) ||
+      (codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
+      codePoint >= 0x1f000)
+  ) {
+    return 2;
+  }
+  return 1;
+}
+
+function visibleWidth(text: string): number {
+  const clean = text.replace(ANSI_RE, "").replace(/\r/g, "").replace(/\t/g, "  ");
+  let cols = 0;
+  for (const ch of clean) cols += charWidth(ch.codePointAt(0) ?? 0);
+  return cols;
+}
+
+/** Clips plain text to at most maxCols visible terminal cells, never overflowing width. */
+function clipPlain(text: string, maxCols: number): string {
+  const clean = text.replace(ANSI_RE, "").replace(/\r/g, "").replace(/\t/g, "  ");
+  if (maxCols <= 0) return "";
+  if (visibleWidth(clean) <= maxCols) return clean;
+  if (maxCols === 1) return "…";
+  let out = "";
+  let cols = 0;
+  for (const ch of clean) {
+    const w = charWidth(ch.codePointAt(0) ?? 0);
+    if (cols + w > maxCols - 1) break;
+    out += ch;
+    cols += w;
+  }
+  return `${out}…`;
+}
+
+function wrapPlain(text: string, maxCols: number): string[] {
+  const limit = Math.max(1, maxCols);
   const out: string[] = [];
-  for (const raw of text.split("\n")) {
-    if (raw.length <= width) {
+  for (const raw of text
+    .replace(ANSI_RE, "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/\t/g, "  ")
+    .split("\n")) {
+    if (visibleWidth(raw) <= limit) {
       out.push(raw);
       continue;
     }
-    let rest = raw;
-    while (rest.length > width) {
-      out.push(rest.slice(0, width));
-      rest = rest.slice(width);
+    let line = "";
+    let cols = 0;
+    for (const ch of raw) {
+      const w = charWidth(ch.codePointAt(0) ?? 0);
+      if (cols + w > limit && line.length > 0) {
+        out.push(line);
+        line = ch;
+        cols = w;
+      } else {
+        line += ch;
+        cols += w;
+      }
     }
-    if (rest) out.push(rest);
+    if (line) out.push(line);
   }
   return out;
 }
@@ -110,7 +171,7 @@ function makeTextComponent(buildLines: (width: number) => string[]) {
   return {
     invalidate() {},
     render(width: number): string[] {
-      return buildLines(width);
+      return buildLines(Math.max(1, width));
     },
   };
 }
@@ -127,15 +188,15 @@ export const renderSubagentResults: MessageRenderer<ResultsDetails> = (message, 
     : `${count} run(s)`;
   const pad = " ".repeat(Math.max(0, options.outputPad));
   const hint = options.expanded ? "" : ` (${options.keyHint("app.tools.expand", "to expand")})`;
+  const hintCols = visibleWidth(hint);
 
   return makeTextComponent((width) => {
-    const innerWidth = Math.max(10, width - pad.length * 2);
+    const innerWidth = Math.max(1, width - pad.length * 2);
     const headerPlain = `↳ subagents finished: ${list}`;
-    const clipped =
-      headerPlain.length > innerWidth
-        ? `${headerPlain.slice(0, Math.max(1, innerWidth - 1))}…`
-        : headerPlain;
-    const lines = [`${pad}${theme.fg("muted", clipped)}${hint}`];
+    const showHint = !options.expanded && innerWidth > hintCols + 8;
+    const headerBudget = showHint ? innerWidth - hintCols : innerWidth;
+    const clipped = clipPlain(headerPlain, headerBudget);
+    const lines = [`${pad}${theme.fg("muted", clipped)}${showHint ? hint : ""}`];
     if (!options.expanded) return lines;
 
     const raw =
@@ -157,22 +218,24 @@ export const renderSubagentCall: NonNullable<
   ToolDefinition<typeof LaunchInput, SubagentToolDetails>["renderCall"]
 > = (args, theme) => {
   const tags: string[] = [];
-  if (args?.readOnly) tags.push("read");
+  if (args?.access && args.access !== "write") tags.push(args.access);
   else if (args?.worktree) tags.push("worktree");
   if (args?.background) tags.push("bg");
   if (args?.placement && args.placement !== "tab") tags.push(args.placement);
   const label = args?.label?.trim() || "subagent";
-  const badge = tags.length ? ` ${theme.fg("muted", `[${tags.join(" · ")}]`)}` : "";
+  const badgePlain = tags.length ? ` [${tags.join(" · ")}]` : "";
   const firstLine = (args?.task ?? "").trim().split("\n")[0]?.trim() ?? "";
 
   return makeTextComponent((width) => {
-    const lines = [`${theme.fg("toolTitle", theme.bold("subagent"))} ${label}${badge}`];
-    if (firstLine) {
-      const clipped =
-        firstLine.length > Math.max(10, width - 2)
-          ? `${firstLine.slice(0, Math.max(1, width - 3))}…`
-          : firstLine;
-      lines.push(theme.fg("dim", `  ${clipped}`));
+    const prefixCols = visibleWidth("subagent ");
+    const badgeCols = visibleWidth(badgePlain);
+    const showBadge = badgePlain.length > 0 && width > prefixCols + badgeCols + 4;
+    const labelBudget = Math.max(1, width - prefixCols - (showBadge ? badgeCols : 0));
+    const clippedLabel = clipPlain(label, labelBudget);
+    const badge = showBadge ? theme.fg("muted", badgePlain) : "";
+    const lines = [`${theme.fg("toolTitle", theme.bold("subagent"))} ${clippedLabel}${badge}`];
+    if (firstLine && width > 4) {
+      lines.push(theme.fg("dim", `  ${clipPlain(firstLine, width - 2)}`));
     }
     return lines;
   });
@@ -188,10 +251,10 @@ export const renderSubagentResult: NonNullable<
     .join("\n");
 
   return makeTextComponent((width) => {
-    const inner = Math.max(10, width - 2);
+    const inner = Math.max(1, width - 2);
     if (options.isPartial) {
       const status = rawText.trim() || "running…";
-      return [theme.fg("muted", `  ▸ ${status.slice(0, inner)}`)];
+      return [theme.fg("muted", `  ${clipPlain(`▸ ${status}`, inner)}`)];
     }
 
     if (options.expanded) {
@@ -200,7 +263,7 @@ export const renderSubagentResult: NonNullable<
 
     if (details?.background) {
       const wt = details.worktreeBranch ? ` · ${details.worktreeBranch}` : "";
-      return [theme.fg("muted", `  ↳ running in background${wt}`)];
+      return [theme.fg("muted", `  ${clipPlain(`↳ running in background${wt}`, inner)}`)];
     }
 
     const ok = details?.status === "completed";
@@ -211,11 +274,16 @@ export const renderSubagentResult: NonNullable<
         ? "warning"
         : "error";
     const dur = formatDuration(details?.elapsedMs);
-    const meta = [details?.status ?? "done", dur].filter(Boolean).join(" · ");
+    const meta = clipPlain(
+      [details?.status ?? "done", dur].filter(Boolean).join(" · "),
+      Math.max(1, inner - 2),
+    );
     const lines = [`  ${theme.fg(color, icon)} ${theme.fg("muted", meta)}`];
     if (details?.worktreeBranch) {
       const note = details.worktreeKept ? ` (${details.worktreeKept})` : " (cleaned up)";
-      lines.push(theme.fg("dim", `  branch: ${details.worktreeBranch}${note}`));
+      lines.push(
+        theme.fg("dim", `  ${clipPlain(`branch: ${details.worktreeBranch}${note}`, inner)}`),
+      );
     }
     if (details?.preview) {
       for (const line of wrapPlain(details.preview, inner).slice(0, 3)) {
@@ -242,7 +310,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   const events = new RexEvents();
   const gate = new ConcurrencyGate();
   const liveRuns = new Map<string, ActiveRun>();
+  const reservedRepos = new Map<string, { id: string; label: string }>();
   const inflightDeliveries = new Set<string>();
+  let deliveryQueue: Promise<unknown> = Promise.resolve();
   let context: ExtensionContext | undefined;
   let coalesceTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -266,22 +336,28 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     context.ui.notify(notice, "warning");
   };
 
-  const collectPending = async (ctx: ExtensionContext) => {
-    const sessionId = ctx.sessionManager.getSessionId();
-    const delivered = deliveredRunIds(ctx.sessionManager.getBranch());
-    for (const id of inflightDeliveries) if (delivered.has(id)) inflightDeliveries.delete(id);
+  /** Serialized so overlapping timer/boundary events never double-deliver the same run. */
+  const collectPending = (ctx: ExtensionContext) => {
+    const next = deliveryQueue.then(async () => {
+      const sessionId = ctx.sessionManager.getSessionId();
+      const delivered = deliveredRunIds(ctx.sessionManager.getBranch());
+      for (const id of inflightDeliveries) if (delivered.has(id)) inflightDeliveries.delete(id);
 
-    const ready: { run: RunRecord; result: Awaited<ReturnType<typeof readResult>> }[] = [];
-    for (const run of await listRuns()) {
-      if (run.parentSessionId !== sessionId || !run.background || !isTerminal(run.status)) continue;
-      if (delivered.has(run.id) || inflightDeliveries.has(run.id)) continue;
-      ready.push({ run, result: await readResult(run.id) });
-    }
-    if (ready.length === 0) return null;
-    const packed = packBatchResults(ready);
-    if (packed.runIds.length === 0) return null;
-    for (const id of packed.runIds) inflightDeliveries.add(id);
-    return packed;
+      const ready: { run: RunRecord; result: Awaited<ReturnType<typeof readResult>> }[] = [];
+      for (const run of await listRuns()) {
+        if (run.parentSessionId !== sessionId || !run.background || !isTerminal(run.status))
+          continue;
+        if (delivered.has(run.id) || inflightDeliveries.has(run.id)) continue;
+        ready.push({ run, result: await readResult(run.id) });
+      }
+      if (ready.length === 0) return null;
+      const packed = packBatchResults(ready);
+      if (packed.runIds.length === 0) return null;
+      for (const id of packed.runIds) inflightDeliveries.add(id);
+      return packed;
+    });
+    deliveryQueue = next.catch(() => undefined);
+    return next;
   };
 
   const deliverPending = async (ctx: ExtensionContext, triggerTurn: boolean) => {
@@ -306,14 +382,18 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     }, coalesceDelayMs());
   };
 
-  const injectAtBoundary = async (ctx: ExtensionContext, outcome: string) => {
-    if (outcome === "aborted") return;
+  const injectAtBoundary = async (
+    event: { entries: SessionBoundaryDraft[]; outcome: string },
+    ctx: ExtensionContext,
+  ) => {
+    if (event.outcome !== "completed") return;
     const packed = await collectPending(ctx);
     if (!packed) return;
     clearTimeout(coalesceTimer);
     coalesceTimer = undefined;
     return {
       entries: [
+        ...event.entries,
         {
           type: "custom_message" as const,
           customType: RESULTS_TYPE,
@@ -326,24 +406,43 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     };
   };
 
+  const reattachBackground = async (ctx: ExtensionContext) => {
+    const sessionId = ctx.sessionManager.getSessionId();
+    for (const run of await listRuns()) {
+      if (
+        run.parentSessionId !== sessionId ||
+        !run.background ||
+        isTerminal(run.status) ||
+        liveRuns.has(run.id)
+      ) {
+        continue;
+      }
+      let releaseRepo: (() => void) | undefined;
+      if (run.access === "write" && !run.worktree && run.repoRoot) {
+        const repoKey = run.repoRoot;
+        reservedRepos.set(repoKey, { id: run.id, label: run.label });
+        releaseRepo = () => {
+          if (reservedRepos.get(repoKey)?.id === run.id) reservedRepos.delete(repoKey);
+        };
+      }
+      const handle = attachToRun({
+        run,
+        events,
+        liveRuns,
+        releaseSlot: gate.holdExisting(),
+        releaseRepo,
+        onChange: updateWidget,
+        onWaiting: notifyWaiting,
+      });
+      void handle.done.then(() => scheduleDelivery());
+    }
+  };
+
   pi.on("session_start", async (event, ctx) => {
     context = ctx;
     void cleanupOldRuns().catch(() => undefined);
-
-    if (event.reason === "reload") {
-      const sessionId = ctx.sessionManager.getSessionId();
-      for (const run of await listRuns()) {
-        if (run.parentSessionId !== sessionId || !run.background || isTerminal(run.status))
-          continue;
-        const handle = attachToRun({
-          run,
-          events,
-          liveRuns,
-          onChange: updateWidget,
-          onWaiting: notifyWaiting,
-        });
-        void handle.done.then(() => scheduleDelivery());
-      }
+    if (event.reason === "reload" || event.reason === "resume" || event.reason === "startup") {
+      await reattachBackground(ctx);
     }
     updateWidget();
     await deliverPending(ctx, ctx.isIdle());
@@ -352,18 +451,19 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   // Deliver finished background results right inside the active loop before the model wraps up.
   pi.on("turn_end", async (event, ctx) => {
     context = ctx;
-    return injectAtBoundary(ctx, event.outcome);
+    return injectAtBoundary(event, ctx);
   });
 
   pi.on("agent_before_settle", async (event, ctx) => {
     context = ctx;
-    return injectAtBoundary(ctx, event.outcome);
+    return injectAtBoundary(event, ctx);
   });
 
-  pi.on("agent_settled", async (_event, ctx) => {
+  pi.on("agent_settled", async (event, ctx) => {
     context = ctx;
     clearTimeout(coalesceTimer);
     coalesceTimer = undefined;
+    if (event.aborted) return;
     await deliverPending(ctx, true);
   });
 
@@ -377,6 +477,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       await Promise.all(toCancel.map((entry) => entry.cancel()));
       await deliverPending(ctx, false);
     }
+    // Detach any surviving background watchers so reload/switch never leaks timers or races.
+    for (const entry of Array.from(liveRuns.values())) entry.detach();
     events.stop();
     context = undefined;
   });
@@ -387,7 +489,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     name: "subagent",
     label: "Subagent",
     description:
-      "Delegate a task to a fresh interactive Pi session in an unfocused Rex tab (closes automatically when done). Multiple foreground calls in one turn run in parallel — prefer the default foreground mode whenever you need the results for your reply. Use background: true only when the user wants to keep chatting while a long task runs. Use worktree: true for parallel writers in the same git repository, and readOnly: true for research. Default placement is tab; only set placement (split, float, detached) when the user explicitly asks for that layout. Returns Rex session/block IDs so you can also inspect or arrange panes with the rex CLI.",
+      "Delegate a task to a fresh interactive Pi session in an unfocused Rex tab (closes automatically when done). Multiple foreground calls in one turn run in parallel — prefer the default foreground mode whenever you need the results for your reply. Use background: true only when the user wants to keep chatting while a long task runs. access is write (default, full tools), inspect (full tools including bash/MCP except edit and write; runs in parallel freely), or read (read, grep, find, ls only, no MCP). Use worktree: true for parallel writers in the same git repository. Default placement is tab; only set placement (split, float, detached) when the user explicitly asks for that layout. Returns Rex session/block IDs so you can also inspect or arrange panes with the rex CLI.",
     parameters: LaunchInput,
     renderCall: renderSubagentCall,
     renderResult: renderSubagentResult,
@@ -400,6 +502,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         events,
         gate,
         liveRuns,
+        reservedRepos,
         signal,
         onChange: (run) => {
           updateWidget();
@@ -411,11 +514,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         onWaiting: notifyWaiting,
       });
 
-      const mode: SubagentToolDetails["mode"] = handle.run.readOnly
-        ? "read"
-        : handle.run.worktree
-          ? "worktree"
-          : "write";
+      const mode: SubagentToolDetails["mode"] = handle.run.worktree
+        ? "worktree"
+        : handle.run.access;
 
       if (handle.run.background) {
         void handle.done.then(() => scheduleDelivery());
@@ -477,7 +578,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
           runId: run.id,
           label: run.label,
           status: run.status,
-          readOnly: run.readOnly,
+          access: run.access,
           background: run.background,
           placement: run.placement,
           waiting: run.waiting,

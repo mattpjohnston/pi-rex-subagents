@@ -6,12 +6,13 @@
 --   rex.bind("ctrl+shift+n", "subagents_next_waiting")
 
 local function collect_blocks(session_id)
-  local blocks = {}
+  local blocks, first_windowed = {}, nil
   local view = rex.call("session.view", {session_id = session_id})
   if view and type(view.windows) == "table" then
     for _, win in ipairs(view.windows) do
       for _, layer in ipairs(win.layers or {}) do
         for _, block in ipairs(layer.blocks or {}) do
+          if block.block_id and not first_windowed then first_windowed = block.block_id end
           if block.creator_name == "com.superlogical.terminal" and block.block_id then
             blocks[#blocks + 1] = {
               session_id = session_id,
@@ -37,7 +38,7 @@ local function collect_blocks(session_id)
       end
     end
   end
-  return blocks
+  return blocks, first_windowed
 end
 
 local function oldest_blocked_ts(session_id, block_id)
@@ -57,14 +58,27 @@ local function oldest_blocked_ts(session_id, block_id)
   return oldest
 end
 
+local function anchor_for_session(session_id, preferred, fallback)
+  if preferred then
+    local resolved = rex.call("target.resolve", {kinds = {"block"}, queries = {preferred}})
+    local first = resolved and resolved.results and resolved.results[1]
+    if first and first.status == "resolved" and first.target and first.target.session_id == session_id then
+      return preferred
+    end
+  end
+  return fallback
+end
+
 local function next_waiting(ctx)
-  local anchor = (ctx and ctx.block_id) or (rex.args and rex.args.anchor)
+  local preferred = (ctx and ctx.block_id) or (rex.args and rex.args.anchor)
   local listed, err = rex.call("session.list", {})
   if not listed then return {status = "error", error = tostring(err)} end
 
-  local candidates = {}
+  local candidates, session_anchors = {}, {}
   for _, s in ipairs(listed.sessions or {}) do
-    for _, b in ipairs(collect_blocks(s.session_id)) do
+    local blocks, first_windowed = collect_blocks(s.session_id)
+    session_anchors[s.session_id] = first_windowed
+    for _, b in ipairs(blocks) do
       local since = oldest_blocked_ts(b.session_id, b.block_id)
       if since then
         b.since = since
@@ -83,16 +97,19 @@ local function next_waiting(ctx)
 
   for _, target in ipairs(candidates) do
     local win = target.window_id
-    if not win and anchor then
-      local moved = rex.call("session.move_block", {
-        session_id = target.session_id,
-        block_id = target.block_id,
-        anchor_block_id = anchor,
-      })
-      if moved then
-        local resolved = rex.call("target.resolve", {kinds = {"block"}, queries = {target.block_id}})
-        local first = resolved and resolved.results and resolved.results[1]
-        win = first and first.target and first.target.window_id or nil
+    if not win then
+      local anchor = anchor_for_session(target.session_id, preferred, session_anchors[target.session_id])
+      if anchor then
+        local moved = rex.call("session.move_block", {
+          session_id = target.session_id,
+          block_id = target.block_id,
+          anchor_block_id = anchor,
+        })
+        if moved then
+          local resolved = rex.call("target.resolve", {kinds = {"block"}, queries = {target.block_id}})
+          local first = resolved and resolved.results and resolved.results[1]
+          win = first and first.target and first.target.window_id or nil
+        end
       end
     end
     if win then
