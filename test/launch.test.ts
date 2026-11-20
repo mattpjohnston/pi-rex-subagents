@@ -189,13 +189,22 @@ describe("launch", () => {
       createdAt: 1,
       finishedAt: null,
     };
-    const argv = await buildChildArgv(run, "/ext/index.ts", "/prev/session.jsonl");
-    expect(argv).toContain("--tools");
-    expect(argv).toContain("read,grep,find,ls");
-    expect(argv).toContain("--no-mcp");
-    expect(argv).not.toContain("--no-extensions");
-    expect(argv).toContain("--fork");
-    expect(argv).toContain("/prev/session.jsonl");
+    const inlineArgv = await buildChildArgv(
+      run,
+      "/ext/index.ts",
+      "Check README.md",
+      "/prev/session.jsonl",
+    );
+    expect(inlineArgv).toContain("--tools");
+    expect(inlineArgv).toContain("read,grep,find,ls");
+    expect(inlineArgv).toContain("--no-mcp");
+    expect(inlineArgv).not.toContain("--no-extensions");
+    expect(inlineArgv).toContain("--fork");
+    expect(inlineArgv).toContain("/prev/session.jsonl");
+    expect(inlineArgv.slice(-2)).toEqual(["--", "Check README.md"]);
+
+    const fileFallback = await buildChildArgv(run, "/ext/index.ts", "@weird-prefix");
+    expect(fileFallback.at(-1)).toMatch(/^@.*task\.md$/);
   });
 
   it("enforces concurrency cap and supports abort while queued", async () => {

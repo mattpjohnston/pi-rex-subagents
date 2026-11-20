@@ -4,7 +4,13 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createWorktree, findRepoRoot, finishWorktree } from "../src/worktree.ts";
+import {
+  createWorktree,
+  findRepoRoot,
+  finishWorktree,
+  listSubagentWorktrees,
+  removeSubagentWorktree,
+} from "../src/worktree.ts";
 
 let root: string;
 let repo: string;
@@ -49,15 +55,20 @@ describe("worktree", () => {
     expect(git(repo, ["branch", "--list", created.worktree.branch])).toBe("");
   });
 
-  it("keeps worktree with uncommitted changes and records diffStat", async () => {
+  it("keeps worktree with uncommitted or untracked changes and records both in diffStat", async () => {
     const { worktree } = await createWorktree(repo, repo, "dirty", "1111111122222222");
-    await writeFile(join(worktree.path, "sub", "hello.txt"), "edited\n");
+    await writeFile(join(worktree.path, "new-file.txt"), "brand new\n");
 
     const finished = await finishWorktree(worktree);
     expect(finished.removedAt).toBeUndefined();
     expect(finished.keptReason).toBe("uncommitted changes");
-    expect(finished.diffStat).toContain("hello.txt");
+    expect(finished.diffStat).toContain("?? new-file.txt");
     expect(existsSync(worktree.path)).toBe(true);
+
+    const listed = await listSubagentWorktrees(repo);
+    expect(listed).toEqual([{ path: worktree.path, branch: worktree.branch, dirty: true }]);
+    await removeSubagentWorktree(repo, worktree.path, worktree.branch, true);
+    expect(await listSubagentWorktrees(repo)).toEqual([]);
   });
 
   it("keeps worktree with unmerged commits and removes it once merged", async () => {

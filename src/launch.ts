@@ -30,6 +30,7 @@ import {
   errorText,
   isTakenOver,
   isTerminal,
+  Placement,
   readConfig,
   readResult,
   readRun,
@@ -54,6 +55,7 @@ export const LaunchInput = Type.Object(
     worktree: Type.Optional(Type.Boolean()),
     readOnly: Type.Optional(Type.Boolean()),
     background: Type.Optional(Type.Boolean()),
+    placement: Type.Optional(Placement),
     continueFrom: Type.Optional(Type.String()),
     provider: Type.Optional(Type.String()),
     model: Type.Optional(Type.String()),
@@ -118,9 +120,12 @@ export async function resolveWorkingDir(parentCwd: string, requested?: string): 
   return target;
 }
 
+const INLINE_TASK_MAX_BYTES = 32_768;
+
 export async function buildChildArgv(
   run: RunRecord,
   entry: string,
+  task?: string,
   continueSessionFile?: string,
 ): Promise<string[]> {
   const env = [`PI_SUBAGENTS_RUN_ID=${run.id}`];
@@ -147,7 +152,15 @@ export async function buildChildArgv(
   }
   args.push("-e", entry);
   if (continueSessionFile) args.push("--fork", continueSessionFile);
-  args.push(`@${paths.task}`);
+  // Pass normal prompts directly so the child Rex tab displays clean text rather than
+  // Pi's <file name=".../task.md"> attachment wrapper; fall back to @task.md for huge/@ tasks.
+  const canInline =
+    task !== undefined &&
+    Buffer.byteLength(task) <= INLINE_TASK_MAX_BYTES &&
+    !task.startsWith("@") &&
+    !task.includes("\0");
+  if (canInline) args.push("--", task);
+  else args.push(`@${paths.task}`);
   return ["/usr/bin/env", ...env, ...args];
 }
 
@@ -358,7 +371,7 @@ export async function launchSubagent(options: {
 
   const id = randomBytes(10).toString("hex");
   const label = input.label?.trim() || `sub-${id.slice(0, 6)}`;
-  const placement = config.placement;
+  const placement = input.placement ?? config.placement;
   const keepOpen = config.keepOpen;
 
   let effectiveCwd = requestedCwd;
@@ -403,7 +416,7 @@ export async function launchSubagent(options: {
   let releaseSlot: (() => void) | undefined;
   try {
     releaseSlot = await gate.acquire(config.maxConcurrent, signal);
-    const argv = await buildChildArgv(run, entry, continueSessionFile);
+    const argv = await buildChildArgv(run, entry, input.task, continueSessionFile);
     run.rex = await openPane({
       sessionId,
       parentBlockId: process.env.REX_BLOCK,

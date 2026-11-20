@@ -62,14 +62,16 @@ export async function createWorktree(
 }
 
 /**
- * Summarizes changes and removes the worktree + branch only when completely clean and
- * holding no unmerged commits. Otherwise keeps it so the parent/user can review and merge.
+ * Summarizes changes (including untracked files) and removes the worktree + branch only when
+ * completely clean and holding no unmerged commits. Otherwise keeps it for review/merge.
  */
 export async function finishWorktree(worktree: WorktreeInfo): Promise<WorktreeInfo> {
   try {
     const dirty = await git(worktree.path, ["status", "--porcelain", "--untracked-files=all"]);
     const tip = await git(worktree.path, ["rev-parse", "HEAD"]);
-    const diffStat = await git(worktree.path, ["diff", "--stat", worktree.base]).catch(() => "");
+    const trackedStat = await git(worktree.path, ["diff", "--stat", worktree.base]).catch(() => "");
+    const summaryParts = [trackedStat, dirty].filter(Boolean);
+    const diffStat = summaryParts.join("\n");
 
     if (dirty) {
       return {
@@ -109,4 +111,49 @@ export async function finishWorktree(worktree: WorktreeInfo): Promise<WorktreeIn
       keptReason: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+export interface ListedWorktree {
+  path: string;
+  branch: string;
+  dirty: boolean;
+}
+
+/** Lists existing subagent/* worktrees attached to repoRoot. */
+export async function listSubagentWorktrees(repoRoot: string): Promise<ListedWorktree[]> {
+  const raw = await git(repoRoot, ["worktree", "list", "--porcelain"]);
+  const entries: ListedWorktree[] = [];
+  let path = "";
+  let branch = "";
+  const flush = async () => {
+    if (path && branch.startsWith("subagent/")) {
+      const status = await git(path, ["status", "--porcelain", "--untracked-files=all"]).catch(
+        () => "",
+      );
+      entries.push({ path, branch, dirty: status.length > 0 });
+    }
+    path = "";
+    branch = "";
+  };
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) {
+      await flush();
+    } else if (line.startsWith("worktree ")) {
+      path = line.slice("worktree ".length);
+    } else if (line.startsWith("branch refs/heads/")) {
+      branch = line.slice("branch refs/heads/".length);
+    }
+  }
+  await flush();
+  return entries;
+}
+
+export async function removeSubagentWorktree(
+  repoRoot: string,
+  path: string,
+  branch: string,
+  force = false,
+): Promise<void> {
+  await git(repoRoot, ["worktree", "remove", ...(force ? ["--force"] : []), path]);
+  await git(repoRoot, ["branch", "-D", branch]).catch(() => undefined);
 }

@@ -21,16 +21,17 @@ Each subagent opens quietly as an unfocused Rex tab in your current session. You
 
 ### `subagent`
 
-| Input                           | Meaning                                                                                                                             |
-| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `task`                          | Complete, standalone task prompt (required).                                                                                        |
-| `label`                         | Display name for the Rex tab.                                                                                                       |
-| `cwd`                           | Working directory (defaults to parent's).                                                                                           |
-| `worktree`                      | Create an isolated git worktree at `<repo>.worktrees/<label>-<id>` on branch `subagent/<label>-<id>`.                               |
-| `readOnly`                      | Restrict tools to `read,grep,find,ls` with `--no-mcp` (keeps extensions/custom providers loaded).                                   |
-| `background`                    | Return immediately so you can keep chatting while a long task runs; finished results arrive cleanly in-loop or coalesced when idle. |
-| `continueFrom`                  | Fork a previous finished run's saved session (`--fork`).                                                                            |
-| `provider`, `model`, `thinking` | Optional overrides (defaults inherited from parent).                                                                                |
+| Input                           | Meaning                                                                                                                                       |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `task`                          | Complete, standalone task prompt (required).                                                                                                  |
+| `label`                         | Display name for the Rex tab.                                                                                                                 |
+| `cwd`                           | Working directory (defaults to parent's).                                                                                                     |
+| `worktree`                      | Create an isolated git worktree at `<repo>.worktrees/<label>-<id>` on branch `subagent/<label>-<id>`.                                         |
+| `readOnly`                      | Restrict tools to `read,grep,find,ls` with `--no-mcp` (keeps extensions/custom providers loaded).                                             |
+| `background`                    | Return immediately so you can keep chatting while a long task runs; finished results arrive cleanly in-loop or coalesced when idle.           |
+| `placement`                     | Optional `"tab"` (default), `"split"`, `"float"`, or `"detached"` — only set when you explicitly ask for that layout (always closes on exit). |
+| `continueFrom`                  | Fork a previous finished run's saved session (`--fork`).                                                                                      |
+| `provider`, `model`, `thinking` | Optional overrides (defaults inherited from parent).                                                                                          |
 
 ### `subagent_control`
 
@@ -40,10 +41,11 @@ Each subagent opens quietly as an unfocused Rex tab in your current session. You
 
 ## Commands
 
-- `/subagents` — List this session's subagents.
+- `/subagents` — Open an interactive picker for this session's subagents (jump to Rex pane, cancel, or inspect details).
 - `/subagents go <label|id>` — Jump to a subagent's pane (or reattach a detached one as a split).
 - `/subagents go next` — Jump to the oldest waiting terminal across all Rex sessions.
 - `/subagents cancel <label|id>` — Cancel a running subagent.
+- `/subagents worktrees` — List and remove leftover `subagent/*` worktrees for this repository.
 - `/subagents clear` — Close any finished panes left open (`keepOpen: true` in config or failed runs).
 - `/subagent-takeover` (inside a subagent pane) — Claim ownership so the session stays open and stops reporting back.
 

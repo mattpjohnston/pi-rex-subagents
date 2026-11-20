@@ -5,7 +5,7 @@
 ## Boundaries
 
 - **Parent model:** chooses tasks, models, worktrees, and foreground vs. background execution. With the Rex skill (`rex __internal skill`), it can also inspect or rearrange panes on request using the returned `session` and `block` IDs.
-- **User:** controls Rex layout (`placement` and `keepOpen` live only in `config.json`, never in LLM tool arguments), drags/splits tabs natively in Rex, and claims ownership with `/subagent-takeover`.
+- **User:** controls pane retention (`keepOpen` lives only in `config.json`, never in LLM tool arguments), drags/splits tabs natively in Rex, uses `/subagents` picker and `/subagents worktrees`, and claims ownership with `/subagent-takeover`.
 - **Pi:** runs each subagent as a real interactive session, saves transcripts, handles `--fork`, and emits OSC 7501 status (`working`, `blocked`, `idle`, `done`, `error`).
 - **Rex:** owns tabs, splits, floating layers, detached blocks, automatic pane close on exit (and retention on quick failures), waiting dots, Activity view, and desktop notifications.
 - **Extension:** spawns Pi in Rex, isolates parallel writers with git worktrees, reports `agent_settled` results cleanly, delivers background completions in-loop (`turn_end` / `agent_before_settle`) or coalesced when idle with a quiet 1-line renderer, and bridges the one OSC 7501 gap (`project_trust`).

@@ -1,6 +1,6 @@
 import type { MessageRenderer, MessageRenderOptions, Theme } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
-import { renderSubagentResults } from "../src/index.ts";
+import { renderSubagentCall, renderSubagentResult, renderSubagentResults } from "../src/index.ts";
 import {
   deliveredRunIds,
   formatRunResult,
@@ -140,6 +140,54 @@ describe("delivery & outcomes", () => {
       renderSubagentResults(message, { ...baseOpts, expanded: true }, theme)?.render(100) ?? [];
     expect(expanded.length).toBeGreaterThan(2);
     expect(expanded.join("\n")).toContain("Full raw payload line 1");
+  });
+
+  it("renders foreground subagent calls and results compactly unless expanded", () => {
+    const theme = {
+      fg: (_color: string, text: string) => text,
+      bold: (text: string) => text,
+    } as unknown as Theme;
+
+    const callLines = renderSubagentCall(
+      { task: "Inspect auth flow\nMore details", label: "auth-check", readOnly: true },
+      theme,
+      {} as never,
+    ).render(80);
+    expect(callLines[0]).toContain("subagent auth-check [read]");
+    expect(callLines[1]).toContain("Inspect auth flow");
+
+    const collapsed = renderSubagentResult(
+      {
+        content: [{ type: "text", text: "Run: abc\nOutcome: completed\n\nAll good." }],
+        details: {
+          runId: "abc",
+          label: "auth-check",
+          status: "completed",
+          elapsedMs: 4200,
+          worktreeBranch: "subagent/auth-check-abc",
+          worktreeKept: "uncommitted changes",
+          preview: "All good.",
+        },
+      },
+      { expanded: false, isPartial: false },
+      theme,
+      {} as never,
+    ).render(80);
+    expect(collapsed.join("\n")).toContain("✓ completed · 4.2s");
+    expect(collapsed.join("\n")).toContain("branch: subagent/auth-check-abc");
+    expect(collapsed.join("\n")).toContain("All good.");
+    expect(collapsed.join("\n")).not.toContain("Run: abc");
+
+    const expanded = renderSubagentResult(
+      {
+        content: [{ type: "text", text: "Run: abc\nOutcome: completed\n\nAll good." }],
+        details: { runId: "abc", status: "completed" },
+      },
+      { expanded: true, isPartial: false },
+      theme,
+      {} as never,
+    ).render(80);
+    expect(expanded.join("\n")).toContain("Run: abc");
   });
 
   it("tracks delivered run IDs from both background deliveries and wait tool results", () => {
