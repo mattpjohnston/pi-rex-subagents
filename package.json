@@ -1,7 +1,7 @@
 {
   "name": "pi-rex-subagents",
   "version": "0.1.0",
-  "description": "Delegate work to fresh Pi sessions in Rex tabs: parallel, background and nested subagents with checkout-aware admission",
+  "description": "KISS Pi extension for running subagents as interactive Pi sessions in Rex tabs, splits, or floats",
   "keywords": [
     "agents",
     "pi",
@@ -28,9 +28,7 @@
     "lint": "oxlint --type-aware --deny-warnings",
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",
-    "test": "vitest run",
-    "harness": "node harness/run.ts",
-    "models": "python3 -B models/run.py 20000 && python3 -B models/vacuity.py 5000 && python3 -B models/protocol.py"
+    "test": "vitest run"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "^1.5.0",

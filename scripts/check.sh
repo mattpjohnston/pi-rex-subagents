@@ -22,7 +22,6 @@ run typecheck pnpm -s typecheck
 run lint pnpm -s lint
 run fmt:check pnpm -s fmt:check
 run test pnpm -s test
-run models pnpm -s models
 bare=$(mktemp -d)
 # pnpm's node is a shim that needs pnpm on PATH, so link the binary it runs.
 ln -s "$(node -p process.execPath)" "$bare/node"

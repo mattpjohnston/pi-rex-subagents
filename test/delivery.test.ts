@@ -1,210 +1,115 @@
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { expect, it } from "vitest";
-import {
-  blocksReplacement,
-  deliveredRunIds,
-  endsWithUnansweredDelivery,
-  outcomeReady,
-  packDelivery,
-  pathEntry,
-  RESULTS_TYPE,
-  nextDelivery,
-  shouldAppend,
-  shouldCancel,
-  transitionView,
-  type DeliveryOutcome,
-} from "../src/delivery.ts";
-import type { RunRecord } from "../src/records.ts";
+import { describe, expect, it } from "vitest";
+import { deliveredRunIds, formatRunResult, packBatchResults, RESULTS_TYPE } from "../src/launch.ts";
+import { deriveOutcome } from "../src/reporter.ts";
+import type { ResultFile, RunRecord } from "../src/store.ts";
 
-const id = (char: string) => char.repeat(24);
-function outcome(runId: string, text: string): DeliveryOutcome {
+function makeRun(id: string, overrides: Partial<RunRecord> = {}): RunRecord {
   return {
+    version: 2,
+    id,
+    label: `job-${id.slice(0, 4)}`,
+    parentSessionId: "sess-1",
+    cwd: "/tmp/repo",
+    repoRoot: "/tmp/repo",
+    readOnly: false,
+    background: true,
+    placement: "tab",
+    keepOpen: false,
+    model: { provider: "anthropic", model: "claude-sonnet-4-5", thinking: "low" },
+    continueFrom: null,
+    rex: { sessionId: "session:1", windowId: "window:1", blockId: "block:1" },
+    status: "completed",
+    waiting: null,
+    sessionFile: "/tmp/session.jsonl",
+    diagnostic: null,
+    createdAt: 100,
+    finishedAt: 200,
+    ...overrides,
+  };
+}
+
+function makeResult(runId: string, assistantText: string): ResultFile {
+  return {
+    version: 2,
     runId,
     outcome: "completed",
-    text,
-    sessionPath: `/sessions/${runId}`,
-    resultPath: `/results/${runId}`,
-  };
-}
-function run(patch: Partial<RunRecord> = {}): RunRecord {
-  const settings = { provider: "test", model: "model", thinking: "off" as const };
-  return {
-    version: 1,
-    id: id("a"),
-    label: "child",
-    taskPath: "/task",
-    cwd: "/work",
-    checkoutRoot: "/work",
-    access: "write",
-    requested: settings,
-    effective: settings,
-    background: true,
-    continueFrom: null,
-    parentSessionId: "parent",
-    parentRunId: null,
-    depth: 0,
-    rex: null,
-    location: null,
-    paths: {
-      run: "/run",
-      result: "/result",
-      claim: "/claim",
-      lock: "/lock",
-      events: "/events",
-      inbox: "/inbox",
-      sessionDir: "/session",
-    },
-    lifecycle: "running",
-    process: { state: "live", pid: 1 },
-    waiting: null,
-    queue: null,
-    sessionFile: "/session/child.jsonl",
-    diagnostic: null,
-    createdAt: 1,
-    updatedAt: 1,
-    loadedAt: 1,
-    finishedAt: null,
-    ...patch,
+    assistantText,
+    stopReason: "stop",
+    reason: null,
+    sessionFile: "/tmp/session.jsonl",
+    model: { provider: "anthropic", model: "claude-sonnet-4-5", thinking: "low" },
+    finishedAt: 200,
   };
 }
 
-it("packs full entries until the cap, then path entries, and stays inside both limits", () => {
-  const full = outcome(id("b"), "x".repeat(20_000));
-  const packed = packDelivery(
-    [full, outcome(id("c"), "y".repeat(40_000)), outcome(id("d"), "z".repeat(40_000))],
-    50 * 1024,
-    2000,
-  );
-  expect(Buffer.byteLength(packed.content)).toBeLessThanOrEqual(50 * 1024);
-  expect(packed.content.split("\n").length).toBeLessThanOrEqual(2000);
-  expect(packed.runIds).toEqual([id("b"), id("c"), id("d")]);
-  expect(packed.content).toContain("x".repeat(20_000));
-  expect(packed.content).toContain(pathEntry(outcome(id("c"), "")));
-  expect(packed.content).not.toContain("y".repeat(100));
-});
-
-it("leaves an entry pending when even its path form does not fit", () => {
-  const packed = packDelivery([outcome(id("e"), "huge")], 20, 2);
-  expect(packed.runIds).toEqual([]);
-  expect(packed.content).toBe("");
-});
-
-it("recognizes a delivery on the active branch after compaction and not after leaving it", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "pirs-delivery-"));
-  const session = SessionManager.create(dir, join(dir, "sessions"));
-  const runId = id("f");
-  const user = session.appendMessage({ role: "user", content: "start", timestamp: 1 });
-  session.appendCustomMessageEntry(RESULTS_TYPE, "five results", true, { runIds: [runId] });
-  const kept = session.appendMessage({ role: "user", content: "kept", timestamp: 2 });
-  session.appendCompaction("summary of the delivery", kept, 10, {
-    readFiles: [],
-    modifiedFiles: [],
+describe("delivery & outcomes", () => {
+  it("derives outcomes accurately from assistant messages", () => {
+    expect(
+      deriveOutcome({ stopReason: "stop", content: [{ type: "text", text: "all good" }] }, false)
+        .outcome,
+    ).toBe("completed");
+    expect(deriveOutcome(undefined, true).outcome).toBe("aborted");
+    expect(
+      deriveOutcome({ stopReason: "error", errorMessage: "rate limit", content: [] }, false),
+    ).toMatchObject({ outcome: "failed", reason: "rate limit" });
+    expect(deriveOutcome({ stopReason: "length", content: [] }, false).outcome).toBe("incomplete");
+    expect(deriveOutcome(undefined, false, true)).toMatchObject({
+      outcome: "failed",
+      reason: "Child quit before settlement",
+    });
   });
-  const branch = session.getBranch();
-  expect(deliveredRunIds(branch)).toEqual(new Set([runId]));
-  expect(branch.some((entry) => entry.type === "custom_message")).toBe(true);
-  expect(session.buildContextEntries().some((entry) => entry.type === "custom_message")).toBe(
-    false,
-  );
-  const compaction = branch.find((entry) => entry.type === "compaction");
-  expect(compaction?.type === "compaction" ? compaction.details : undefined).toEqual({
-    readFiles: [],
-    modifiedFiles: [],
-  });
-  expect(endsWithUnansweredDelivery(branch)).toBe(false);
-  session.branch(user);
-  expect(deliveredRunIds(session.getBranch()).size).toBe(0);
-  const unanswered = SessionManager.inMemory(dir);
-  unanswered.appendCustomMessageEntry(RESULTS_TYPE, "pending turn", true, { runIds: [runId] });
-  expect(endsWithUnansweredDelivery(unanswered.getBranch())).toBe(true);
-});
 
-it("decides replacement, cancellation, and append without treating takeover as owned", () => {
-  const delivered = new Set<string>();
-  const live = transitionView(run(), null, delivered);
-  const queued = transitionView(
-    run({ id: id("q"), queue: { reason: "capacity", detail: "ceiling", since: 1 } }),
-    null,
-    delivered,
-  );
-  const pending = transitionView(
-    run({
-      id: id("p"),
-      lifecycle: "completed",
-      process: { state: "exited", code: 0 },
-      finishedAt: 2,
-    }),
-    "result",
-    delivered,
-  );
-  const taken = transitionView(
-    run({ id: id("t"), lifecycle: "taken_over", process: { state: "live", pid: 4 } }),
-    "taken_over",
-    delivered,
-  );
-  expect(blocksReplacement([live, taken], "parent")).toBe(true);
-  expect(blocksReplacement([taken], "parent")).toBe(true);
-  expect(
-    blocksReplacement(
-      [
-        transitionView(
-          run({ id: id("t"), lifecycle: "taken_over", process: { state: "live", pid: 4 } }),
-          "taken_over",
-          new Set([id("t")]),
-        ),
-      ],
-      "parent",
-    ),
-  ).toBe(false);
-  expect(blocksReplacement([pending], "parent")).toBe(true);
-  expect(shouldCancel(live, "parent")).toBe(true);
-  expect(shouldCancel(queued, "parent")).toBe(true);
-  expect(shouldCancel(taken, "parent")).toBe(false);
-  expect(shouldCancel(pending, "parent")).toBe(false);
-  expect(shouldAppend(pending, "parent")).toBe(true);
-  expect(shouldAppend(live, "parent")).toBe(false);
-  expect(outcomeReady(run({ process: { state: "unresolved", pid: 9 } }), "cancelled")).toBe(true);
-  expect(outcomeReady(run(), "result")).toBe(false);
-  expect(outcomeReady(run(), "taken_over")).toBe(true);
-  expect(outcomeReady(run({ process: { state: "exited", code: 0 } }), "taken_over")).toBe(true);
-  expect(outcomeReady(run({ background: false }), "result")).toBe(false);
-});
-
-it("coalesces on settle or the idle timer, and reconciles without waiting", () => {
-  const pending = { idle: true, pending: true, unanswered: false };
-  expect(nextDelivery({ ...pending, source: "finished" })).toBe("wait");
-  expect(nextDelivery({ ...pending, idle: false, source: "finished" })).toBe("wait");
-  expect(nextDelivery({ ...pending, source: "settled" })).toBe("deliver");
-  expect(nextDelivery({ ...pending, source: "timer" })).toBe("deliver");
-  expect(nextDelivery({ ...pending, source: "reconcile" })).toBe("deliver");
-  expect(nextDelivery({ idle: true, pending: false, unanswered: true, source: "reconcile" })).toBe(
-    "note",
-  );
-  expect(nextDelivery({ idle: false, pending: true, unanswered: false, source: "settled" })).toBe(
-    "wait",
-  );
-  expect(nextDelivery({ idle: false, pending: true, unanswered: false, source: "append" })).toBe(
-    "deliver",
-  );
-});
-
-it("counts runs reported by subagent_control wait as delivered", () => {
-  const branch = [
-    {
-      type: "message",
-      message: {
-        role: "toolResult",
-        toolName: "subagent_control",
-        details: { runIds: ["c".repeat(24)] },
+  it("includes Rex IDs and worktree diff stat in formatted results", () => {
+    const run = makeRun("aaaaaaaaaaaaaaaaaaaa", {
+      worktree: {
+        path: "/tmp/repo.worktrees/fix",
+        branch: "subagent/fix",
+        base: "abc123",
+        repository: "/tmp/repo",
+        keptReason: "unmerged commits on branch",
+        diffStat: " src/app.ts | 10 ++++++++++\n 1 file changed",
       },
-    },
-    {
-      type: "message",
-      message: { role: "toolResult", toolName: "read", details: { runIds: ["d".repeat(24)] } },
-    },
-  ];
-  expect(deliveredRunIds(branch)).toEqual(new Set(["c".repeat(24)]));
+    });
+    const text = formatRunResult(run, makeResult(run.id, "Implemented fix."));
+    expect(text).toContain("Rex: session=session:1 block=block:1");
+    expect(text).toContain("subagent/fix");
+    expect(text).toContain("src/app.ts | 10 ++++++++++");
+    expect(text).toContain("Implemented fix.");
+  });
+
+  it("packs multiple results under the byte cap, falling back to path-only entries", () => {
+    const a = makeRun("aaaaaaaaaaaaaaaaaaaa");
+    const b = makeRun("bbbbbbbbbbbbbbbbbbbb");
+    const packed = packBatchResults(
+      [
+        { run: a, result: makeResult(a.id, "short reply") },
+        { run: b, result: makeResult(b.id, "x".repeat(500)) },
+      ],
+      650,
+      100,
+    );
+    expect(packed.runIds).toEqual([a.id, b.id]);
+    expect(packed.content).toContain("short reply");
+    expect(packed.content).toContain("Result:");
+    expect(packed.content).not.toContain("x".repeat(500));
+  });
+
+  it("tracks delivered run IDs from both background deliveries and wait tool results", () => {
+    const ids = deliveredRunIds([
+      {
+        type: "custom_message",
+        customType: RESULTS_TYPE,
+        details: { runIds: ["run-1", "run-2"] },
+      },
+      {
+        type: "message",
+        message: {
+          role: "toolResult",
+          toolName: "subagent_control",
+          details: { runIds: ["run-3"] },
+        },
+      },
+    ]);
+    expect([...ids].sort()).toEqual(["run-1", "run-2", "run-3"]);
+  });
 });

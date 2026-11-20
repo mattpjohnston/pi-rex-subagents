@@ -1,236 +1,135 @@
 import { fileURLToPath } from "node:url";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { CONTROL_LIST_LIMIT, cancelControlled, ownedRuns, treeOrder } from "./control.ts";
-import { shouldAppend, type TransitionView } from "./delivery.ts";
-import { isTerminal, listRuns, type Location, type RunRecord } from "./records.ts";
-import { parentBlock } from "./launch.ts";
-import { locate, object, rexJson } from "./rex.ts";
-import { cappedText } from "./results.ts";
-import { releaseRefusal, releaseRun } from "./admission.ts";
-import { readClaim } from "./claims.ts";
-import { clearEligible, dismiss, keep, lastKnownTab } from "./terminals.ts";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ActiveRun } from "./launch.ts";
+import { closeBlock, focusBlock, locateBlock, observeProcess, rexJson } from "./rex.ts";
+import { errorText, isTerminal, listRuns, type RunRecord } from "./store.ts";
 
-/**
- * Brings a child into view. A detached child has no window, so it comes back as a split beside
- * the pane this command runs in; a floating one is focused over its window.
- */
-async function showChild(location: Location): Promise<void> {
-  if (location.windowId === null) {
-    await rexJson([
-      "api",
-      "call",
-      "session.move_block",
-      JSON.stringify({
-        session_id: location.sessionId,
-        block_id: location.blockId,
-        anchor_block_id: parentBlock(),
-      }),
-    ]);
-    return;
-  }
-  await rexJson([
-    "do",
-    "session.select",
-    `session_id=${location.sessionId}`,
-    `window_id=${location.windowId}`,
-    "--json",
-  ]);
-  await rexJson([
-    "api",
-    "call",
-    "session.focus_block",
-    JSON.stringify({ session_id: location.sessionId, block_id: location.blockId }),
-  ]);
-}
-export const live = (run: RunRecord) =>
-  !isTerminal(run.lifecycle) || run.process.state !== "exited";
 export function statusLine(run: RunRecord): string {
-  const human = run.waiting
-    ? `waiting for a human: ${run.waiting.kind} — ${run.waiting.title}`
-    : null;
-  const queued = run.queue ? `queued for ${run.queue.reason}: ${run.queue.detail}` : null;
-  const indent = "  ".repeat(Math.max(0, run.depth - 1));
-  return `${indent}${run.label} [${run.access}] ${[human, queued, run.activity?.parked ? `parked (${run.activity.parked})` : null].filter(Boolean).join("; ") || run.lifecycle}`;
+  const mode = run.readOnly ? "read" : run.worktree ? "worktree" : "write";
+  const detail = run.waiting ? `waiting (${run.waiting.title})` : run.status;
+  return `${run.label} [${mode}] ${detail}`;
 }
 
-export function registerSubagentsCommand(
+function findUnique(runs: readonly RunRecord[], query: string): RunRecord | null {
+  const matches = runs.filter((r) => r.id === query || r.label === query);
+  return matches.length === 1 ? (matches[0] ?? null) : null;
+}
+
+export function registerCommands(
   pi: ExtensionAPI,
-  {
-    refresh,
-    views,
-  }: {
-    refresh: (ctx: ExtensionContext) => Promise<void>;
-    views: (ctx: ExtensionContext, records: RunRecord[]) => Promise<TransitionView[]>;
-  },
+  liveRuns: Map<string, ActiveRun>,
+  onUpdate: () => void,
 ): void {
   pi.registerCommand("subagents", {
-    description:
-      "List this parent's runs; all lists every live child; go <label> selects its tab; go next selects the oldest wait across parents; cancel <label|run-id> cancels a background run; release <label|run-id> frees an uncertain launch; keep <label|run-id> pins its tab open",
+    description: "Manage subagents: /subagents [go <label|id|next> | cancel <label|id> | clear]",
     handler: async (args, ctx) => {
-      const all = treeOrder(await listRuns());
-      const owned = ownedRuns(all, ctx.sessionManager.getSessionId());
-      if (args === "clear" || args.startsWith("dismiss ")) {
-        const target = args.slice("dismiss ".length).trim();
-        const selected =
-          args === "clear"
-            ? (
-                await Promise.all(
-                  owned.map(async (run) => ((await clearEligible(run)) ? run : null)),
-                )
-              ).filter((run) => run !== null)
-            : owned.filter((run) => run.id === target || run.label === target);
-        if (args !== "clear" && selected.length !== 1) {
-          ctx.ui.notify(
-            "Dismiss requires exactly one child label or run ID belonging to this parent",
-            "error",
-          );
-          return;
-        }
-        for (const run of selected) await dismiss(run);
-        ctx.ui.notify(
-          `${selected.length} exited child terminal(s) dismissed; artifacts retained`,
-          "info",
-        );
-        await refresh(ctx);
-        return;
-      }
-      if (args.startsWith("keep ")) {
-        const target = args.slice("keep ".length).trim();
-        const matches = owned.filter((run) => run.id === target || run.label === target);
-        const selected = matches.length === 1 ? matches[0] : undefined;
-        if (!selected) {
-          ctx.ui.notify(
-            "Keep requires exactly one run label or ID belonging to this parent",
-            "error",
-          );
-          return;
-        }
-        await keep(selected);
-        ctx.ui.notify(`Keeping ${selected.label}'s tab; /subagents dismiss closes it`, "info");
-        return;
-      }
-      if (args.startsWith("release ")) {
-        const target = args.slice("release ".length).trim();
-        const matches = all.filter((run) => run.id === target || run.label === target);
-        const selected = matches.length === 1 ? matches[0] : undefined;
-        if (!selected) {
-          ctx.ui.notify("Release requires exactly one run label or ID", "error");
-          return;
-        }
-        const refusal = releaseRefusal(selected, await readClaim(selected.paths.claim));
-        if (refusal) {
-          ctx.ui.notify(`Release refused: ${refusal}`, "warning");
-          return;
-        }
-        const confirmed = await ctx.ui.confirm(
-          `Release ${selected.label}?`,
-          `Rex never confirmed a tab for run ${selected.id}, so the extension can't tell whether its process exists. Release it only if you're sure nothing is running for it: its reservation on ${selected.checkoutRoot} is dropped and other writers may start there.`,
-        );
-        if (!confirmed) return;
-        const late = await releaseRun(selected.id, ctx.sessionManager.getSessionId());
-        ctx.ui.notify(
-          late ? `Release refused: ${late}` : `Released ${selected.label}; its reservation is gone`,
-          late ? "warning" : "info",
-        );
-        await refresh(ctx);
-        return;
-      }
-      if (args.startsWith("cancel ")) {
-        const target = args.slice("cancel ".length).trim();
-        const matches = owned.filter((run) => run.id === target || run.label === target);
-        if (matches.length !== 1) {
-          ctx.ui.notify(
-            "Cancel requires exactly one run label or ID belonging to this parent",
-            "error",
-          );
-          return;
-        }
-        const selected = matches[0];
-        if (!selected) return;
-        const response = await cancelControlled(selected);
-        ctx.ui.notify(
-          `${selected.label} (${selected.id}): ${response.status}; ${response.reason}`,
-          response.status === "refused" ? "warning" : "info",
-        );
-        await refresh(ctx);
-        return;
-      }
-      if (args === "go next") {
-        const selected = object(
-          await rexJson([
+      const trimmed = args.trim();
+      const sessionId = ctx.sessionManager.getSessionId();
+      const owned = (await listRuns()).filter((r) => r.parentSessionId === sessionId);
+
+      if (trimmed === "go next") {
+        try {
+          const script = fileURLToPath(new URL("../rex/next_waiting.lua", import.meta.url));
+          const result = await rexJson([
             "do",
-            fileURLToPath(new URL("../rex/next_waiting.lua", import.meta.url)),
-            // A detached child comes back beside this pane.
+            script,
             ...(process.env.REX_BLOCK ? [`anchor=${process.env.REX_BLOCK}`] : []),
             "--json",
-          ]),
-        );
+          ]);
+          ctx.ui.notify(
+            result.status === "selected"
+              ? "Jumped to oldest waiting terminal"
+              : "No waiting terminals right now",
+            "info",
+          );
+        } catch (error) {
+          ctx.ui.notify(`Could not jump to waiting terminal: ${errorText(error)}`, "error");
+        }
+        return;
+      }
+
+      if (trimmed.startsWith("go ")) {
+        const target = findUnique(owned, trimmed.slice(3).trim());
+        if (!target?.rex) {
+          ctx.ui.notify("Specify a unique label or run ID with a Rex pane", "error");
+          return;
+        }
+        const loc = await locateBlock(target.rex.blockId, target.rex.sessionId);
+        if (!loc) {
+          ctx.ui.notify(`${target.label}'s Rex pane is already closed`, "warning");
+          return;
+        }
+        await focusBlock(loc, process.env.REX_BLOCK);
+        ctx.ui.notify(`Focused ${target.label}`, "info");
+        return;
+      }
+
+      if (trimmed.startsWith("cancel ")) {
+        const target = findUnique(owned, trimmed.slice(7).trim());
+        if (!target) {
+          ctx.ui.notify("Specify a unique label or run ID belonging to this session", "error");
+          return;
+        }
+        const active = liveRuns.get(target.id);
+        if (!active) {
+          ctx.ui.notify(`${target.label} is not running (${target.status})`, "warning");
+          return;
+        }
+        const outcome = await active.cancel();
+        onUpdate();
         ctx.ui.notify(
-          selected.status === "selected"
-            ? "Selected the oldest waiting subagent"
-            : `No waiting subagent (${String(selected.status)})`,
-          selected.status === "selected" ? "info" : "warning",
+          outcome === "taken_over"
+            ? `${target.label} was taken over; left running`
+            : `Cancelled ${target.label}`,
+          outcome === "taken_over" ? "warning" : "info",
         );
         return;
       }
-      if (args.startsWith("go ")) {
-        const label = args.slice(3).trim();
-        const matches = all.filter(
-          (run) => run.label === label && owned.some((r) => r.id === run.id),
-        );
-        if (matches.length !== 1 || !matches[0]?.rex) {
-          ctx.ui.notify("Label must identify exactly one child with a Rex block", "error");
-          return;
+
+      if (trimmed === "clear") {
+        let closed = 0;
+        for (const run of owned) {
+          if (!isTerminal(run.status) || run.status === "taken_over" || !run.rex) continue;
+          const obs = await observeProcess(run.rex);
+          if (obs.location && obs.process.state === "exited") {
+            await closeBlock(obs.location).catch(() => undefined);
+            closed += 1;
+          }
         }
-        const location = await locate(
-          matches[0].rex.blockId,
-          matches[0].location ?? matches[0].rex,
-        );
-        if (!location) {
-          ctx.ui.notify("Child block no longer exists; artifacts are retained", "warning");
-          return;
-        }
-        await showChild(location);
-        ctx.ui.notify(`Selected subagent ${matches[0].label}`, "info");
+        ctx.ui.notify(`Closed ${closed} finished pane(s)`, "info");
         return;
       }
-      if (args && args !== "all") {
+
+      if (trimmed) {
         ctx.ui.notify(
-          "Usage: /subagents [all | go <label|next> | cancel <label|run-id> | release <label|run-id> | keep <label|run-id> | clear | dismiss <label|run-id>]",
+          "Usage: /subagents [go <label|id|next> | cancel <label|id> | clear]",
           "error",
         );
         return;
       }
-      const selected = args === "all" ? all.filter(live) : owned;
-      for (const run of selected.slice(0, CONTROL_LIST_LIMIT)) {
-        const tab = lastKnownTab(run);
-        if (tab) run.location = await locate(tab.blockId, tab);
+
+      if (owned.length === 0) {
+        ctx.ui.notify("No subagents in this session", "info");
+        return;
       }
-      const pending = (await views(ctx, all)).filter((run) =>
-        shouldAppend(run, ctx.sessionManager.getSessionId()),
-      ).length;
-      const text = cappedText(
-        [
-          selected
-            .slice(0, CONTROL_LIST_LIMIT)
-            .map((run) =>
-              [
-                statusLine(run),
-                run.parentRunId &&
-                all.find((r) => r.id === run.parentRunId)?.process.state === "exited"
-                  ? "Orphaned: immediate parent is gone; outcome retained on disk"
-                  : "",
-                `Run ${run.id}; checkout ${run.checkoutRoot}; model ${run.effective.provider}/${run.effective.model} (${run.effective.thinking})`,
-                `Rex ${run.tabClosedAt !== undefined ? "closed" : JSON.stringify(run.location)}; process ${JSON.stringify(run.process)}`,
-                `Result ${run.paths.result}; events ${run.paths.events}; session ${run.sessionFile ?? run.paths.sessionDir}`,
-              ].join("\n"),
-            )
-            .join("\n\n") || "No subagents",
-          pending ? `${pending} background result(s) pending delivery` : "",
-        ]
-          .filter(Boolean)
-          .join("\n\n"),
-      );
+
+      const text = owned
+        .slice(-20)
+        .map((run) => {
+          const lines = [
+            `${statusLine(run)} (${run.id})`,
+            `  model: ${run.model.provider}/${run.model.model} (${run.model.thinking}) | placement: ${run.placement}`,
+          ];
+          if (run.rex) lines.push(`  rex: session=${run.rex.sessionId} block=${run.rex.blockId}`);
+          if (run.worktree) {
+            lines.push(
+              `  worktree: ${run.worktree.path} (${run.worktree.branch}${run.worktree.removedAt ? ", removed" : ""})`,
+            );
+          }
+          return lines.join("\n");
+        })
+        .join("\n\n");
+
       ctx.ui.notify(text, "info");
       pi.sendMessage(
         { customType: "subagents-list", content: text, display: true },

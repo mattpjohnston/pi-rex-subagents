@@ -1,18 +1,14 @@
 import { execFile } from "node:child_process";
-import { mkdir } from "node:fs/promises";
+import { mkdir, realpath } from "node:fs/promises";
 import { basename, dirname, join, relative } from "node:path";
-import { isRepository } from "./checkout.ts";
-import type { RunRecord } from "./records.ts";
+import type { WorktreeInfo } from "./store.ts";
 
-type Worktree = NonNullable<RunRecord["worktree"]>;
-
-/** Plain git, not the hardened reader: this creates and removes worktrees on purpose. */
 function git(cwd: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(
       "git",
       ["-C", cwd, ...args],
-      { encoding: "utf8", timeout: 60_000, maxBuffer: 4 * 1024 * 1024 },
+      { encoding: "utf8", timeout: 30_000, maxBuffer: 4 * 1024 * 1024 },
       (error, stdout, stderr) => {
         if (error) reject(new Error(`git ${args[0]}: ${stderr.trim() || error.message}`));
         else resolve(stdout.trim());
@@ -21,7 +17,16 @@ function git(cwd: string, args: string[]): Promise<string> {
   });
 }
 
-/** A label as it can appear in a directory and a branch name. */
+/** Returns the real path of the git working-tree root, or null if cwd is not in a git repo. */
+export async function findRepoRoot(cwd: string): Promise<string | null> {
+  try {
+    const top = await git(cwd, ["rev-parse", "--show-toplevel"]);
+    return top ? await realpath(top) : null;
+  } catch {
+    return null;
+  }
+}
+
 function slug(label: string): string {
   return (
     label
@@ -33,43 +38,49 @@ function slug(label: string): string {
 }
 
 /**
- * A worktree for one run, next to the repository: <parent>/<repo>.worktrees/<label>-<id>, on a
- * new branch subagent/<label>-<id> from the checkout's HEAD. One root per repository lets one
- * "Trust parent folder" cover every worktree. The child works in the same subdirectory it would
- * have in the checkout.
+ * Creates a worktree next to the repository: <parent>/<repo>.worktrees/<label>-<shortId>
+ * on branch subagent/<label>-<shortId> from HEAD. One container folder lets Pi's
+ * "Trust parent folder" cover all future worktrees for the repo.
  */
 export async function createWorktree(
-  root: string,
+  repoRoot: string,
   cwd: string,
   label: string,
   id: string,
-): Promise<{ worktree: Worktree; cwd: string }> {
-  if (!isRepository(root)) throw new Error(`worktree needs a git repository; ${cwd} isn't in one`);
+): Promise<{ worktree: WorktreeInfo; cwd: string }> {
   const name = `${slug(label)}-${id.slice(0, 8)}`;
-  const container = join(dirname(root), `${basename(root)}.worktrees`);
+  const container = join(dirname(repoRoot), `${basename(repoRoot)}.worktrees`);
   const path = join(container, name);
   const branch = `subagent/${name}`;
-  const base = await git(root, ["rev-parse", "--verify", "HEAD"]);
+  const base = await git(repoRoot, ["rev-parse", "--verify", "HEAD"]);
   await mkdir(container, { recursive: true });
-  await git(root, ["worktree", "add", "-q", "-b", branch, path, base]);
+  await git(repoRoot, ["worktree", "add", "-q", "-b", branch, path, base]);
   return {
-    worktree: { path, branch, base, repository: root },
-    cwd: join(path, relative(root, cwd)),
+    worktree: { path, branch, base, repository: repoRoot },
+    cwd: join(path, relative(repoRoot, cwd)),
   };
 }
 
 /**
- * Removes a finished run's worktree and branch when nothing in them would be lost: no changes,
- * untracked files included, and no commit that another branch doesn't also hold. Otherwise
- * the worktree stays and the reason is recorded, so the parent can review and merge it.
+ * Summarizes changes and removes the worktree + branch only when completely clean and
+ * holding no unmerged commits. Otherwise keeps it so the parent/user can review and merge.
  */
-export async function retireWorktree(worktree: Worktree): Promise<Worktree> {
+export async function finishWorktree(worktree: WorktreeInfo): Promise<WorktreeInfo> {
   try {
     const dirty = await git(worktree.path, ["status", "--porcelain", "--untracked-files=all"]);
-    if (dirty) return { ...worktree, kept: "it has uncommitted changes" };
     const tip = await git(worktree.path, ["rev-parse", "HEAD"]);
+    const diffStat = await git(worktree.path, ["diff", "--stat", worktree.base]).catch(() => "");
+
+    if (dirty) {
+      return {
+        ...worktree,
+        ...(diffStat ? { diffStat } : {}),
+        keptReason: "uncommitted changes",
+      };
+    }
+
     if (tip !== worktree.base) {
-      const holders = (
+      const otherBranches = (
         await git(worktree.repository, [
           "for-each-ref",
           "--format=%(refname)",
@@ -80,13 +91,22 @@ export async function retireWorktree(worktree: Worktree): Promise<Worktree> {
       )
         .split("\n")
         .filter((ref) => ref && ref !== `refs/heads/${worktree.branch}`);
-      if (!holders.length)
-        return { ...worktree, kept: "its branch has commits no other branch has" };
+      if (otherBranches.length === 0) {
+        return {
+          ...worktree,
+          ...(diffStat ? { diffStat } : {}),
+          keptReason: "unmerged commits on branch",
+        };
+      }
     }
+
     await git(worktree.repository, ["worktree", "remove", worktree.path]);
     await git(worktree.repository, ["branch", "-D", worktree.branch]);
     return { ...worktree, removedAt: Date.now() };
   } catch (error) {
-    return { ...worktree, kept: error instanceof Error ? error.message : String(error) };
+    return {
+      ...worktree,
+      keptReason: error instanceof Error ? error.message : String(error),
+    };
   }
 }
