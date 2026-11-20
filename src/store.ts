@@ -120,6 +120,7 @@ export type ResultFile = Static<typeof ResultFile>;
 const ConfigFile = Type.Object(
   {
     maxConcurrent: Type.Optional(Type.Integer({ minimum: 1 })),
+    placement: Type.Optional(Placement),
     keepOpen: Type.Optional(Type.Boolean()),
     keepRunsForDays: Type.Optional(Type.Union([Type.Integer({ minimum: 1 }), Type.Literal(false)])),
   },
@@ -128,6 +129,7 @@ const ConfigFile = Type.Object(
 
 export interface SubagentConfig {
   maxConcurrent: number;
+  placement: Placement;
   keepOpen: boolean;
   keepRunsForMs: number | null;
 }
@@ -287,6 +289,7 @@ export async function readConfig(): Promise<SubagentConfig> {
   const keepDays = raw.keepRunsForDays ?? 30;
   return {
     maxConcurrent: raw.maxConcurrent ?? 4,
+    placement: raw.placement ?? "tab",
     keepOpen: raw.keepOpen ?? false,
     keepRunsForMs: keepDays === false ? null : keepDays * 86_400_000,
   };

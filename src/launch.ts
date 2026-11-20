@@ -30,7 +30,6 @@ import {
   errorText,
   isTakenOver,
   isTerminal,
-  Placement,
   readConfig,
   readResult,
   readRun,
@@ -55,8 +54,6 @@ export const LaunchInput = Type.Object(
     worktree: Type.Optional(Type.Boolean()),
     readOnly: Type.Optional(Type.Boolean()),
     background: Type.Optional(Type.Boolean()),
-    placement: Type.Optional(Placement),
-    keepOpen: Type.Optional(Type.Boolean()),
     continueFrom: Type.Optional(Type.String()),
     provider: Type.Optional(Type.String()),
     model: Type.Optional(Type.String()),
@@ -196,16 +193,23 @@ export function formatRunResult(run: RunRecord, result?: ResultFile | null): str
   return cappedText(lines.join("\n"));
 }
 
+export interface BatchSummary {
+  runId: string;
+  label: string;
+  status: RunRecord["status"];
+}
+
 export function packBatchResults(
   items: readonly { run: RunRecord; result: ResultFile | null }[],
   maxBytes = DEFAULT_MAX_BYTES,
   maxLines = DEFAULT_MAX_LINES,
-): { content: string; runIds: string[] } {
+): { content: string; runIds: string[]; summaries: BatchSummary[] } {
   const fits = (text: string) =>
     Buffer.byteLength(text) <= maxBytes && text.split("\n").length <= maxLines;
 
   const parts: string[] = [];
   const runIds: string[] = [];
+  const summaries: BatchSummary[] = [];
   for (const { run, result } of items) {
     const full = formatRunResult(run, result);
     const short = [
@@ -218,14 +222,16 @@ export function packBatchResults(
     if (fits(withFull)) {
       parts.push(full);
       runIds.push(run.id);
+      summaries.push({ runId: run.id, label: run.label, status: run.status });
       continue;
     }
     const withShort = [...parts, short].join("\n\n---\n\n");
     if (!fits(withShort)) break;
     parts.push(short);
     runIds.push(run.id);
+    summaries.push({ runId: run.id, label: run.label, status: run.status });
   }
-  return { content: parts.join("\n\n---\n\n"), runIds };
+  return { content: parts.join("\n\n---\n\n"), runIds, summaries };
 }
 
 export function deliveredRunIds(branch: readonly BranchNode[]): Set<string> {
@@ -352,8 +358,8 @@ export async function launchSubagent(options: {
 
   const id = randomBytes(10).toString("hex");
   const label = input.label?.trim() || `sub-${id.slice(0, 6)}`;
-  const placement = input.placement ?? "tab";
-  const keepOpen = input.keepOpen ?? config.keepOpen;
+  const placement = config.placement;
+  const keepOpen = config.keepOpen;
 
   let effectiveCwd = requestedCwd;
   let worktree: RunRecord["worktree"];

@@ -1,6 +1,10 @@
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+  MessageRenderer,
+} from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { registerCommands, statusLine } from "./commands.ts";
 import {
@@ -14,6 +18,7 @@ import {
   packBatchResults,
   RESULTS_TYPE,
   type ActiveRun,
+  type BatchSummary,
 } from "./launch.ts";
 import { registerReporter } from "./reporter.ts";
 import { RexEvents } from "./rex.ts";
@@ -29,6 +34,11 @@ import {
 
 const ENTRY = fileURLToPath(import.meta.url);
 const RUNTIME_CHANNEL = "pi-rex-subagents:runtime";
+
+interface ResultsDetails {
+  runIds: string[];
+  summaries?: BatchSummary[];
+}
 
 const ControlInput = Type.Object(
   {
@@ -57,6 +67,65 @@ function claimRuntime(events: ExtensionAPI["events"]): boolean {
   return true;
 }
 
+function wrapPlain(text: string, maxWidth: number): string[] {
+  const width = Math.max(10, maxWidth);
+  const out: string[] = [];
+  for (const raw of text.split("\n")) {
+    if (raw.length <= width) {
+      out.push(raw);
+      continue;
+    }
+    let rest = raw;
+    while (rest.length > width) {
+      out.push(rest.slice(0, width));
+      rest = rest.slice(width);
+    }
+    if (rest) out.push(rest);
+  }
+  return out;
+}
+
+/**
+ * Quiet 1-line renderer for background subagent deliveries, replacing Pi's default
+ * full-width purple custom-message box. Press Ctrl+O to inspect the raw payload.
+ */
+export const renderSubagentResults: MessageRenderer<ResultsDetails> = (message, options, theme) => {
+  const summaries = message.details?.summaries ?? [];
+  const count = summaries.length || message.details?.runIds?.length || 1;
+  const list = summaries.length
+    ? summaries.map((s) => `${s.label} (${s.status})`).join(", ")
+    : `${count} run(s)`;
+  const pad = " ".repeat(Math.max(0, options.outputPad));
+  const hint = options.expanded ? "" : ` (${options.keyHint("app.tools.expand", "to expand")})`;
+
+  return {
+    invalidate() {},
+    render(width: number): string[] {
+      const innerWidth = Math.max(10, width - pad.length * 2);
+      const headerPlain = `↳ subagents finished: ${list}`;
+      const clipped =
+        headerPlain.length > innerWidth
+          ? `${headerPlain.slice(0, Math.max(1, innerWidth - 1))}…`
+          : headerPlain;
+      const lines = [`${pad}${theme.fg("muted", clipped)}${hint}`];
+      if (!options.expanded) return lines;
+
+      const raw =
+        typeof message.content === "string"
+          ? message.content
+          : message.content
+              .filter((part) => part.type === "text")
+              .map((part) => part.text)
+              .join("\n");
+      lines.push("");
+      for (const line of wrapPlain(raw, innerWidth)) {
+        lines.push(`${pad}${theme.fg("dim", line)}`);
+      }
+      return lines;
+    },
+  };
+};
+
 export default async function (pi: ExtensionAPI): Promise<void> {
   if (!claimRuntime(pi.events)) return;
 
@@ -67,6 +136,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     registerReporter(pi, run);
     return;
   }
+
+  pi.registerMessageRenderer<ResultsDetails>(RESULTS_TYPE, renderSubagentResults);
 
   const events = new RexEvents();
   const gate = new ConcurrencyGate();
@@ -95,7 +166,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     context.ui.notify(notice, "warning");
   };
 
-  const deliverPending = async (ctx: ExtensionContext, triggerTurn: boolean) => {
+  const collectPending = async (ctx: ExtensionContext) => {
     const sessionId = ctx.sessionManager.getSessionId();
     const delivered = deliveredRunIds(ctx.sessionManager.getBranch());
     for (const id of inflightDeliveries) if (delivered.has(id)) inflightDeliveries.delete(id);
@@ -106,18 +177,22 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       if (delivered.has(run.id) || inflightDeliveries.has(run.id)) continue;
       ready.push({ run, result: await readResult(run.id) });
     }
-    if (ready.length === 0) return;
-
+    if (ready.length === 0) return null;
     const packed = packBatchResults(ready);
-    if (packed.runIds.length === 0) return;
+    if (packed.runIds.length === 0) return null;
     for (const id of packed.runIds) inflightDeliveries.add(id);
+    return packed;
+  };
 
+  const deliverPending = async (ctx: ExtensionContext, triggerTurn: boolean) => {
+    const packed = await collectPending(ctx);
+    if (!packed) return;
     pi.sendMessage(
       {
         customType: RESULTS_TYPE,
         content: packed.content,
         display: true,
-        details: { runIds: packed.runIds },
+        details: { runIds: packed.runIds, summaries: packed.summaries },
       },
       { triggerTurn, deliverAs: "followUp" },
     );
@@ -129,6 +204,26 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       coalesceTimer = undefined;
       if (context?.isIdle()) void deliverPending(context, true);
     }, coalesceDelayMs());
+  };
+
+  const injectAtBoundary = async (ctx: ExtensionContext, outcome: string) => {
+    if (outcome === "aborted") return;
+    const packed = await collectPending(ctx);
+    if (!packed) return;
+    clearTimeout(coalesceTimer);
+    coalesceTimer = undefined;
+    return {
+      entries: [
+        {
+          type: "custom_message" as const,
+          customType: RESULTS_TYPE,
+          content: packed.content,
+          display: true,
+          details: { runIds: packed.runIds, summaries: packed.summaries },
+        },
+      ],
+      continue: true,
+    };
   };
 
   pi.on("session_start", async (event, ctx) => {
@@ -152,6 +247,17 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     }
     updateWidget();
     await deliverPending(ctx, ctx.isIdle());
+  });
+
+  // Deliver finished background results right inside the active loop before the model wraps up.
+  pi.on("turn_end", async (event, ctx) => {
+    context = ctx;
+    return injectAtBoundary(ctx, event.outcome);
+  });
+
+  pi.on("agent_before_settle", async (event, ctx) => {
+    context = ctx;
+    return injectAtBoundary(ctx, event.outcome);
   });
 
   pi.on("agent_settled", async (_event, ctx) => {
@@ -181,7 +287,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     name: "subagent",
     label: "Subagent",
     description:
-      "Delegate a task to a fresh interactive Pi session in Rex. Use worktree: true for parallel writers in the same git repository, readOnly: true for research, background: true to keep working while results arrive automatically, and placement (tab, split, float, detached) to control Rex layout. Returns Rex session/block IDs so you can also inspect or arrange panes with the rex CLI.",
+      "Delegate a task to a fresh interactive Pi session in an unfocused Rex tab (closes automatically when done). Multiple foreground calls in one turn run in parallel — prefer the default foreground mode whenever you need the results for your reply. Use background: true only when the user wants to keep chatting while a long task runs. Use worktree: true for parallel writers in the same git repository, and readOnly: true for research. Returns Rex session/block IDs so you can also inspect or arrange panes with the rex CLI.",
     parameters: LaunchInput,
     async execute(_id, input, signal, onUpdate, ctx) {
       context = ctx;

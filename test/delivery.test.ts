@@ -1,5 +1,13 @@
+import type { MessageRenderer, MessageRenderOptions, Theme } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
-import { deliveredRunIds, formatRunResult, packBatchResults, RESULTS_TYPE } from "../src/launch.ts";
+import { renderSubagentResults } from "../src/index.ts";
+import {
+  deliveredRunIds,
+  formatRunResult,
+  packBatchResults,
+  RESULTS_TYPE,
+  type BatchSummary,
+} from "../src/launch.ts";
 import { deriveOutcome } from "../src/reporter.ts";
 import type { ResultFile, RunRecord } from "../src/store.ts";
 
@@ -89,9 +97,49 @@ describe("delivery & outcomes", () => {
       100,
     );
     expect(packed.runIds).toEqual([a.id, b.id]);
+    expect(packed.summaries).toEqual([
+      { runId: a.id, label: a.label, status: "completed" },
+      { runId: b.id, label: b.label, status: "completed" },
+    ]);
     expect(packed.content).toContain("short reply");
     expect(packed.content).toContain("Result:");
     expect(packed.content).not.toContain("x".repeat(500));
+  });
+
+  it("renders background deliveries as a quiet 1-line summary when collapsed and full text when expanded", () => {
+    const theme = { fg: (_color: string, text: string) => text } as unknown as Theme;
+    const message: Parameters<
+      MessageRenderer<{ runIds: string[]; summaries?: BatchSummary[] }>
+    >[0] = {
+      role: "custom",
+      customType: RESULTS_TYPE,
+      content: "Full raw payload line 1\nFull raw payload line 2",
+      display: true,
+      timestamp: 100,
+      details: {
+        runIds: ["r1", "r2"],
+        summaries: [
+          { runId: "r1", label: "alpha", status: "completed" },
+          { runId: "r2", label: "beta", status: "failed" },
+        ],
+      },
+    };
+    const baseOpts: MessageRenderOptions = {
+      expanded: false,
+      outputPad: 1,
+      keyText: () => "ctrl+o",
+      keyHint: (_id, desc) => `ctrl+o ${desc}`,
+    };
+
+    const collapsed = renderSubagentResults(message, baseOpts, theme)?.render(100) ?? [];
+    expect(collapsed).toHaveLength(1);
+    expect(collapsed[0]).toContain("subagents finished: alpha (completed), beta (failed)");
+    expect(collapsed[0]).toContain("ctrl+o to expand");
+
+    const expanded =
+      renderSubagentResults(message, { ...baseOpts, expanded: true }, theme)?.render(100) ?? [];
+    expect(expanded.length).toBeGreaterThan(2);
+    expect(expanded.join("\n")).toContain("Full raw payload line 1");
   });
 
   it("tracks delivered run IDs from both background deliveries and wait tool results", () => {

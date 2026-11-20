@@ -210,15 +210,17 @@ describe("launch", () => {
     release2();
   });
 
-  it("launches tab, split, float, and detached panes via Rex", async () => {
+  it("launches tab, split, float, and detached panes via user config placement", async () => {
     const log = join(tmp, "rex.log");
     process.env.PI_SUBAGENTS_REX = await createFakeRex(log, "complete");
     const gate = new ConcurrencyGate();
     const live = new Map<string, ActiveRun>();
+    await mkdir(join(tmp, "state"), { recursive: true });
 
     for (const placement of ["tab", "split", "float", "detached"] as const) {
+      await writeFile(join(tmp, "state", "config.json"), JSON.stringify({ placement }));
       const handle = await launchSubagent({
-        input: { task: "say hi", label: `p-${placement}`, placement, background: true },
+        input: { task: "say hi", label: `p-${placement}`, background: true },
         ctx: fakeCtx(tmp),
         entry: "/ext/index.ts",
         events,

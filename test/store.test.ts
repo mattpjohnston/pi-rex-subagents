@@ -70,13 +70,18 @@ describe("store", () => {
   it("reads default config and rejects malformed config.json", async () => {
     expect(await readConfig()).toEqual({
       maxConcurrent: 4,
+      placement: "tab",
       keepOpen: false,
       keepRunsForMs: 30 * 86_400_000,
     });
 
-    await writeFile(join(dir, "config.json"), JSON.stringify({ maxConcurrent: 8, keepOpen: true }));
+    await writeFile(
+      join(dir, "config.json"),
+      JSON.stringify({ maxConcurrent: 8, placement: "split", keepOpen: true }),
+    );
     expect(await readConfig()).toEqual({
       maxConcurrent: 8,
+      placement: "split",
       keepOpen: true,
       keepRunsForMs: 30 * 86_400_000,
     });
