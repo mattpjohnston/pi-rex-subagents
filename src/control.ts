@@ -4,7 +4,7 @@ import { readClaim } from "./claims.ts";
 import { sendInboxMessage } from "./inbox.ts";
 import { cancel } from "./launch.ts";
 import { listRuns, readRun, type RunRecord } from "./records.ts";
-import { object, observeProcess, rexJson } from "./rex.ts";
+import { command, locate, object, observeProcess, rexJson, screenTail } from "./rex.ts";
 import { cappedText } from "./results.ts";
 import { setTimeout as delay } from "node:timers/promises";
 import { park, wake } from "./admission.ts";
@@ -21,7 +21,11 @@ export const ControlInput = Type.Object(
       Type.Literal("cancel"),
       Type.Literal("message"),
       Type.Literal("wait"),
+      Type.Literal("screen"),
+      Type.Literal("answer"),
     ]),
+    since: Type.Optional(Type.Number()),
+    keys: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 20 })),
     runId: Type.Optional(Type.String()),
     runIds: Type.Optional(Type.Array(Type.String(), { minItems: 1, maxItems: CONTROL_LIST_LIMIT })),
     timeoutSeconds: Type.Optional(Type.Integer({ minimum: 1, maximum: WAIT_MAX_SECONDS })),
@@ -87,6 +91,51 @@ export async function waitForRuns(
   const packed = packDelivery(ids.flatMap((id) => ready.get(id) ?? []));
   const pending = ids.filter((id) => !packed.runIds.includes(id));
   return { text: packed.content, runIds: packed.runIds, pending };
+}
+/** What a child's terminal shows now, so the parent can read a dialog before answering it. */
+export async function childScreen(run: RunRecord): Promise<string | null> {
+  const where = lastKnownTab(run);
+  const location = where ? await locate(where.blockId, where) : null;
+  return location ? screenTail(location, 60, 8000) : null;
+}
+/**
+ * Answers the dialog a child is waiting on by typing into its terminal: text then Enter, or
+ * the named keys. It types only while the run record shows the same wait, named by when it
+ * began, so a stale answer can't land in a later dialog or the conversation. A window of
+ * milliseconds between that check and the keys remains.
+ */
+export async function answerDialog(
+  run: RunRecord,
+  since: number,
+  answer: { text?: string; keys?: string[] },
+  settleMs = 3000,
+): Promise<{ status: "sent" | "refused"; reason?: string; ended?: boolean }> {
+  const now = await readRun(run.id);
+  if (now.waiting?.since !== since)
+    return {
+      status: "refused",
+      reason: now.waiting
+        ? `the child is now waiting on another prompt, since ${now.waiting.since}`
+        : "the child is not waiting on that prompt any more",
+    };
+  const where = lastKnownTab(now);
+  const location = where ? await locate(where.blockId, where) : null;
+  if (!location) return { status: "refused", reason: "the child has no terminal" };
+  const target = ["-s", location.sessionId, "-b", location.blockId];
+  const type = async (args: string[]) => {
+    const reply = await command(args);
+    if (reply.code !== 0) throw new Error(`Rex ${args[0]} exit ${reply.code}: ${reply.stderr}`);
+  };
+  if (answer.text !== undefined) await type(["send", ...target, answer.text]);
+  const keys = answer.keys ?? (answer.text !== undefined ? ["enter"] : []);
+  if (keys.length) await type(["send-key", ...target, ...keys]);
+  const deadline = Date.now() + settleMs;
+  let ended = false;
+  while (!ended && Date.now() < deadline) {
+    await delay(200);
+    ended = (await readRun(run.id)).waiting?.since !== since;
+  }
+  return { status: "sent", ended };
 }
 export function treeOrder(runs: readonly RunRecord[]): RunRecord[] {
   const ordered: RunRecord[] = [];
@@ -178,7 +227,7 @@ export function registerControl(pi: ExtensionAPI): void {
     name: "subagent_control",
     label: "Subagent control",
     description:
-      "Control this parent's delegated runs. list probes liveness and shows bounded status including queues and human waits. wait blocks until every run in runIds has an outcome or timeoutSeconds (default 600) passes, and returns those outcomes; they are not delivered again later. While waiting you can't be steered, so prefer ending your turn and letting background results arrive unless you need them now. cancel stops a queued or live background child so you can replace a stuck agent; it never kills a taken-over human session. message sends stop/hold orders or a correction to a live child, as steering or an idle prompt, with an accepted/refused acknowledgment (unacknowledged after 10 seconds is NOT delivery). It never types into a dialog. message is not for chaining new work: launch a fresh subagent instead.",
+      "Control this parent's delegated runs. list probes liveness and shows bounded status including queues and human waits. wait blocks until every run in runIds has an outcome or timeoutSeconds (default 600) passes, and returns those outcomes; they are not delivered again later. While waiting you can't be steered, so prefer ending your turn and letting background results arrive unless you need them now. cancel stops a queued or live background child so you can replace a stuck agent; it never kills a taken-over human session. message sends stop/hold orders or a correction to a live child, as steering or an idle prompt, with an accepted/refused acknowledgment (unacknowledged after 10 seconds is NOT delivery). It never types into a dialog. screen returns what the child's terminal shows, to read a dialog it waits on (list shows waiting with its since). answer types into that dialog only while the same wait is open: pass since, and text (sent with Enter) or keys such as down and enter; it reports whether the wait ended. Prefer leaving dialogs to the person unless you know the answer. message is not for chaining new work: launch a fresh subagent instead.",
     parameters: ControlInput,
     async execute(callId, input, signal, _update, ctx) {
       const sessionId = ctx.sessionManager.getSessionId();
@@ -225,6 +274,16 @@ export function registerControl(pi: ExtensionAPI): void {
             status: "refused",
             reason: "runId must identify a run owned by this parent",
           };
+        else if (input.operation === "screen")
+          response = { screen: await childScreen(run), waiting: run.waiting };
+        else if (input.operation === "answer")
+          response =
+            input.since === undefined || (input.text === undefined && !input.keys)
+              ? { status: "refused", reason: "answer needs since, and text or keys" }
+              : await answerDialog(run, input.since, {
+                  ...(input.text !== undefined ? { text: input.text } : {}),
+                  ...(input.keys ? { keys: input.keys } : {}),
+                });
         else if (input.operation === "cancel")
           response = await cancelControlled(run, () =>
             pi.events.emit("subagents:test-cancel-claimed", { runId: run.id }),

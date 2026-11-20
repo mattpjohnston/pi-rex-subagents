@@ -67,7 +67,12 @@ export async function turnEnded(run: Run, label: string): Promise<void> {
   const deadline = Date.now() + 180_000;
   while (Date.now() < deadline) {
     const messages = (await entries(await sessionPath(run, label)))
-      .filter((row) => row.type === "message" || row.type === "custom_message")
+      // An attention notice starts no turn, so it can't be what a turn ended on.
+      .filter(
+        (row) =>
+          row.type === "message" ||
+          (row.type === "custom_message" && row.customType !== "subagent-attention"),
+      )
       .map((row) => (row.type === "message" ? object(row.message) : { role: "custom" }));
     const last = messages.at(-1);
     if (last?.role === "assistant" && last.stopReason !== "toolUse") {

@@ -199,7 +199,11 @@ export async function closeBlock(location: Location): Promise<void> {
 }
 
 /** The last lines a terminal shows, for explaining a child that died before it started. */
-export async function screenTail(location: Location, lines = 15): Promise<string | null> {
+export async function screenTail(
+  location: Location,
+  lines = 15,
+  chars = 2000,
+): Promise<string | null> {
   try {
     const reply = await command([
       "capture",
@@ -212,7 +216,7 @@ export async function screenTail(location: Location, lines = 15): Promise<string
     ]);
     if (reply.code !== 0) return null;
     const shown = reply.stdout.trimEnd().split("\n").slice(-lines).join("\n").trim();
-    return shown ? shown.slice(-2000) : null;
+    return shown ? shown.slice(-chars) : null;
   } catch {
     return null;
   }

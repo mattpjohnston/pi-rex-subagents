@@ -214,6 +214,45 @@ export default async function control(): Promise<void> {
     console.log(
       "control wait: PASS; real model waits, the timeout lists the running child, the outcome comes back once and is not redelivered",
     );
+    const asking = await launchControlled(run, {
+      label: "dialog-answer",
+      cwd: await directory(run, "dialog-answer"),
+      background: true,
+      task: "Call ask_human exactly once, wait for the answer, then reply with exactly what it returned.",
+    });
+    const askingRun = await asking.record();
+    await asking.answer();
+    const asked = await until("child dialog to answer", async () => {
+      const r = await current(run, askingRun.id);
+      return r.waiting?.source === "reporter" && r;
+    });
+    assert(asked.waiting);
+    const screen = await parentTool(run, asking.parent, "dialog-answer", "subagent_control", {
+      operation: "screen",
+      runId: asked.id,
+    });
+    assert.match(String(screen.screen), /Subagent acceptance question/);
+    const stale = await parentTool(run, asking.parent, "dialog-answer", "subagent_control", {
+      operation: "answer",
+      runId: asked.id,
+      since: asked.waiting.since - 1,
+      text: "WRONG",
+    });
+    assert.equal(stale.status, "refused");
+    const answered = await parentTool(run, asking.parent, "dialog-answer", "subagent_control", {
+      operation: "answer",
+      runId: asked.id,
+      since: asked.waiting.since,
+      text: "PARENT_ANSWERED",
+    });
+    assert.equal(answered.status, "sent");
+    const askedDone = await finished(run, asked);
+    assert((await events(askedDone)).some((e) => e.type === "ui_prompt_end"));
+    assert.match((await result(askedDone)).assistantText, /PARENT_ANSWERED/);
+    assert.doesNotMatch((await result(askedDone)).assistantText, /WRONG/);
+    console.log(
+      "control answer: PASS; real model reads the child's screen, a stale answer is refused, the right one answers the dialog",
+    );
     await run.record("control-evidence.json", {
       list,
       message,
