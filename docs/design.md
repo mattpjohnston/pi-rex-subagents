@@ -11,7 +11,9 @@ A subagent is an ordinary Pi process running in a Rex tab.
 - Rex runs the terminals and handles tabs, focus, and process status.
 - The extension starts subagents, decides when each may start, tracks each run until it ends, keeps writers out of each other's way, and gets the result back to the parent.
 
-The extension has no roles, workflows, worktree management, or automatic retries. A label is only a tab name. Any subagent with a shell can write files, whatever its task says.
+The extension has no roles, workflows, or automatic retries.
+
+A launch with `worktree: true` gets its own git worktree at `<parent>/<repo>.worktrees/<label>-<id>`, on a new branch `subagent/<label>-<id>` from the checkout's HEAD, and works in the same subdirectory it would have used in the checkout. One root per repository means one "Trust parent folder" covers them all. The worktree is the run's checkout, so worktree writers on one repository run at the same time, and the parent can keep editing the original checkout. When the run ends and its process has exited, the worktree and branch are removed if nothing would be lost: no changes, untracked files included, and no commit another branch doesn't also hold. Otherwise they stay, and the result names them and says why. The extension never merges or cherry-picks. A label is only a tab name. Any subagent with a shell can write files, whatever its task says.
 
 ## Tabs
 

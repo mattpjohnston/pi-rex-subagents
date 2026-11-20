@@ -62,6 +62,11 @@ export function checkoutText(checkout: CheckoutReport): string {
       : `${checkout.total} path(s)`;
   return `Checkout changed during the run (${cap}): ${shown}. This records that the checkout changed during the run. It does not say the child caused the change.`;
 }
+function worktreeText(worktree: NonNullable<RunRecord["worktree"]>): string {
+  const where = `Worktree: ${worktree.path} on branch ${worktree.branch}`;
+  if (worktree.removedAt !== undefined) return `${where}, removed: nothing in it would be lost.`;
+  return `${where}, kept${worktree.kept ? ` because ${worktree.kept}` : ""}. Review and merge it, then remove it with git worktree remove.`;
+}
 export function resultText(run: RunRecord, result?: ResultFile, checkout?: CheckoutReport): string {
   const location = run.location ?? run.rex;
   const report = checkout ?? result?.checkout;
@@ -78,6 +83,7 @@ export function resultText(run: RunRecord, result?: ResultFile, checkout?: Check
         ? `Capture: rex capture -s ${location.sessionId} -b ${location.blockId} --trim --unwrap`
         : "Launch location unknown; do not retry blindly",
       report ? checkoutText(report) : "",
+      run.worktree ? worktreeText(run.worktree) : "",
       run.diagnostic ?? "",
       run.lifecycle === "taken_over"
         ? `Accepted messages not yet consumed at takeover: ${JSON.stringify(run.unconsumedMessages ?? [])}`

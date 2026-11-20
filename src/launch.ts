@@ -39,6 +39,7 @@ import { checkoutRoot } from "./checkout.ts";
 import { captureFingerprint, compareFingerprints, type Fingerprint } from "./fingerprint.ts";
 import { executable, resolveSettings, workingDirectory } from "./settings.ts";
 import { INSPECT_EXCLUDED, READ_TOOLS } from "./restrictions.ts";
+import { createWorktree, retireWorktree } from "./worktree.ts";
 import {
   object,
   locate,
@@ -66,6 +67,7 @@ export const LaunchInput = Type.Object(
     model: Type.Optional(Type.String()),
     thinking: Type.Optional(Thinking),
     placement: Type.Optional(Placement),
+    worktree: Type.Optional(Type.Boolean()),
   },
   { additionalProperties: false },
 );
@@ -105,8 +107,8 @@ export async function prepareRun(
   const access = input.access ?? (parentRun?.access === "inspect" ? "inspect" : "write");
   if (input.placement && input.placement !== "tab") parentBlock();
   if (access === "read") await requireReadProvider(settings.effective);
-  const cwd = await workingDirectory(ctx.cwd, input.cwd);
-  const root = await checkoutRoot(cwd);
+  let cwd = await workingDirectory(ctx.cwd, input.cwd);
+  let root = await checkoutRoot(cwd);
   let continueFrom: RunRecord["continueFrom"] = null;
   if (input.continueFrom) {
     const source = await readRun(input.continueFrom);
@@ -124,6 +126,14 @@ export async function prepareRun(
     continueFrom = { runId: source.id, sessionFile };
   }
   const id = randomBytes(12).toString("hex");
+  const label = input.label?.trim() || `child-${id.slice(0, 8)}`;
+  // Created last, so a refusal above leaves nothing behind.
+  let worktree: RunRecord["worktree"];
+  if (input.worktree) {
+    const created = await createWorktree(root, cwd, label, id);
+    ({ worktree, cwd } = created);
+    root = worktree.path;
+  }
   const paths = runPaths(runDirectory(id));
   await privateDirectory(stateDir());
   await privateDirectory(dirname(dirname(paths.run)));
@@ -136,12 +146,13 @@ export async function prepareRun(
   const run: RunRecord = {
     version: 1,
     id,
-    label: input.label?.trim() || `child-${id.slice(0, 8)}`,
+    label,
     taskPath: resolve(dirname(paths.run), "task.md"),
     cwd,
     checkoutRoot: root,
     access,
     placement: input.placement ?? "tab",
+    ...(worktree ? { worktree } : {}),
     requested: settings.requested,
     effective: settings.effective,
     background: input.background === true,
@@ -608,7 +619,8 @@ export async function abandon(
 ): Promise<void> {
   if (isTerminal(run.lifecycle) && error === undefined) return;
   if (error !== undefined) run.diagnostic = errorText(error);
-  if (!(await mayHaveAskedRex(run))) {
+  const neverStarted = !(await mayHaveAskedRex(run));
+  if (neverStarted) {
     await withAdmissionLock(async () => {
       await withProtocolLock(
         run.paths.lock,
@@ -619,6 +631,8 @@ export async function abandon(
     run.process = { state: "exited", code: null };
   }
   if (!isTerminal(run.lifecycle)) transition(run, outcome);
+  if (neverStarted && run.worktree && run.worktree.removedAt === undefined)
+    run.worktree = await retireWorktree(run.worktree);
   await writeRun(run);
 }
 type Watched = { run: RunRecord; result?: ResultFile; checkout?: CheckoutReport };
@@ -872,6 +886,11 @@ async function watch(
     // Readers treat an ended, exited record as finished, so the checkout report comes first.
     const checkout = await finishCheckout(run, before);
     if (checkout && result) result = { ...result, checkout };
+    if (run.worktree)
+      run.worktree =
+        run.process.state === "exited"
+          ? await retireWorktree(run.worktree)
+          : { ...run.worktree, kept: "its process may still be running" };
     await writeRun(run);
     progress(run);
     return { run, ...(result ? { result } : {}), ...(checkout ? { checkout } : {}) };

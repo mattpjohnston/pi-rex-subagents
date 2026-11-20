@@ -85,7 +85,8 @@ async function sameMessageWriter(
     if (entry.message.role !== "assistant" || !Array.isArray(entry.message.content)) return null;
     for (const part of entry.message.content) {
       if (part.type !== "toolCall" || part.name !== "subagent") continue;
-      if (!refusesParentEdits(part.arguments.access)) continue;
+      // A worktree launch works in a new worktree, never in the checkout it starts from.
+      if (!refusesParentEdits(part.arguments.access) || part.arguments.worktree === true) continue;
       const label =
         typeof part.arguments.label === "string" && part.arguments.label.trim()
           ? part.arguments.label.trim()
@@ -128,7 +129,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     if (event.toolName !== "subagent") return;
     const input = parse(LaunchInput, event.args);
     const guards = refusesParentEdits(input.access);
-    if (guards)
+    if (guards && !input.worktree)
       intended.set(event.toolCallId, {
         id: event.toolCallId,
         label: input.label?.trim() || "pending launch",

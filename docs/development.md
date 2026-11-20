@@ -57,6 +57,8 @@ Scenarios live in `harness/scenarios/`:
 | `nesting-cycle`     | Refusing launches that would deadlock, and the depth limit                                                    |
 | `nesting-inbox`     | Nested results and messages arriving together                                                                 |
 | `nesting-races`     | Cancelling a tree of subagents, including a launch Rex hasn't answered yet                                    |
+| `placement`         | Floating and detached subagents, `/subagents go` bringing a detached one back                                 |
+| `worktree`          | Worktree writers running at once, removing a clean worktree and keeping a changed one                         |
 | `attention`         | Jumping to the oldest waiting subagent, the trust prompt reported to Rex, and a dropped event stream          |
 
 Each run gets its own temporary directory, state, and session directories, and Rex sessions named `pirs-h-...`. When it ends, pass or fail, it removes the sessions it created and its temporary directory, and nothing else. It refuses to start if a `pirs-h-` session is left from an earlier run. Output is kept in `.harness-runs/`, which git ignores.

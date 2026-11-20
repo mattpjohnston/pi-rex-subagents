@@ -50,6 +50,7 @@ Ask Pi to hand work to a subagent. It calls the `subagent` tool with these input
 | `background`                    | If `true`, the call returns at once and the result arrives later as a message.                 |
 | `continueFrom`                  | ID of an earlier, finished run. The new subagent starts with a copy of that conversation.      |
 | `provider`, `model`, `thinking` | Model settings. Anything you leave out is copied from the parent.                              |
+| `worktree`                      | If `true`, the subagent works in a new git worktree on its own branch, next to the repository. |
 | `placement`                     | `tab` (default), `float` over the parent's tab, or `detached` to run in no tab at all.         |
 
 Each subagent opens in a new tab in your Rex session, without switching to it. Open the tab to watch. Press Enter to send it a message and Escape to interrupt it, as in any Pi session.
@@ -141,7 +142,7 @@ Subagents follow Pi's usual trust prompts for their working directory, and the e
 
 ## Limitations
 
-- It doesn't create worktrees, retry failed tasks, or choose models. The parent decides those.
+- It creates a worktree only when a launch asks for one, and never merges or cherry-picks. It doesn't retry failed tasks or choose models. The parent decides those.
 - The repository rules apply only to subagents started by this extension on this machine. They don't stop the parent's own shell commands or anything else editing the files.
 - The cap on running subagents isn't a spending limit.
 

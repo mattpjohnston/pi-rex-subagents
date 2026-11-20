@@ -113,6 +113,20 @@ export const RunRecord = Type.Object(
     access: Type.Union([Type.Literal("read"), Type.Literal("inspect"), Type.Literal("write")]),
     /** Where the child opened. Absent in records written before placement existed: a tab. */
     placement: Type.Optional(Placement),
+    /** A worktree created for this run, and what happened to it after the run. */
+    worktree: Type.Optional(
+      Type.Object(
+        {
+          path: text,
+          branch: text,
+          base: text,
+          repository: text,
+          removedAt: Type.Optional(Type.Number()),
+          kept: Type.Optional(text),
+        },
+        object,
+      ),
+    ),
     requested: Settings,
     effective: Settings,
     background: Type.Boolean(),
