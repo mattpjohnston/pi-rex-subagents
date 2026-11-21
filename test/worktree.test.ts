@@ -101,4 +101,17 @@ describe("worktree", () => {
     expect(kept.keptReason).toContain("feat/custom-branch");
     expect((await listSubagentWorktrees(repo)).some((w) => w.path === worktree.path)).toBe(true);
   });
+
+  it("keeps worktree when child commits on subagent branch then detaches back to base", async () => {
+    const { worktree } = await createWorktree(repo, repo, "detach-back", "7777777788888888");
+    await writeFile(join(worktree.path, "sub", "hello.txt"), "committed then detached\n");
+    git(worktree.path, ["add", "."]);
+    git(worktree.path, ["commit", "-q", "-m", "commit on subagent branch"]);
+    git(worktree.path, ["checkout", "-q", "--detach", worktree.base]);
+
+    const kept = await finishWorktree(worktree);
+    expect(kept.removedAt).toBeUndefined();
+    expect(kept.keptReason).toContain(worktree.branch);
+    expect(git(repo, ["branch", "--list", worktree.branch])).toContain(worktree.branch);
+  });
 });

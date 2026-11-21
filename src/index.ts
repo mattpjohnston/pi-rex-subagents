@@ -434,7 +434,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         onChange: updateWidget,
         onWaiting: notifyWaiting,
       });
-      void handle.done.then(() => scheduleDelivery());
+      void handle.done.then(
+        () => scheduleDelivery(),
+        () => undefined,
+      );
     }
   };
 
@@ -519,7 +522,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         : handle.run.access;
 
       if (handle.run.background) {
-        void handle.done.then(() => scheduleDelivery());
+        void handle.done.then(
+          () => scheduleDelivery(),
+          () => undefined,
+        );
         const rexInfo = handle.run.rex
           ? ` (Rex session=${handle.run.rex.sessionId} block=${handle.run.rex.blockId})`
           : "";

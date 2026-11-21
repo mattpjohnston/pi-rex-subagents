@@ -113,54 +113,70 @@ export function registerReporter(pi: ExtensionAPI, run: RunRecord): void {
     trust.end();
   });
 
+  // Serialize takeover vs settlement/shutdown so takeover can never report claimed right
+  // before agent_settled writes result.json and shuts down.
+  let gate: Promise<void> = Promise.resolve();
+  const serialized = <T>(fn: () => Promise<T>): Promise<T> => {
+    const next = gate.then(fn, fn);
+    gate = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  };
+
   pi.registerCommand("subagent-takeover", {
     description: "Take ownership of this subagent session so it stops reporting and stays open",
     handler: async (_args, ctx) => {
-      const state = await markTakenOver(run.id);
-      if (state === "finished") {
-        ctx.ui.notify("This subagent already finished and reported its result.", "warning");
-        return;
-      }
-      ctx.ui.notify(
-        state === "claimed"
-          ? "Session taken over. It will no longer report to the parent or exit automatically."
-          : "You already own this session.",
-        "info",
-      );
+      await serialized(async () => {
+        const state = await markTakenOver(run.id);
+        if (state === "finished") {
+          ctx.ui.notify("This subagent already finished and reported its result.", "warning");
+          return;
+        }
+        ctx.ui.notify(
+          state === "claimed"
+            ? "Session taken over. It will no longer report to the parent or exit automatically."
+            : "You already own this session.",
+          "info",
+        );
+      });
     },
   });
 
   pi.on("agent_settled", async (event, ctx) => {
-    trust.end();
-    if (await isTakenOver(run.id)) return;
-    if (await readResult(run.id)) return;
-    const derived = deriveOutcome(lastAssistant(ctx), event.aborted);
-    // Recheck takeover right before writing so a concurrent /subagent-takeover wins cleanly.
-    if (await isTakenOver(run.id)) return;
-    await writeResult({
-      version: 2,
-      runId: run.id,
-      ...derived,
-      sessionFile: ctx.sessionManager.getSessionFile() ?? null,
-      model: currentModel(ctx),
-      finishedAt: Date.now(),
+    await serialized(async () => {
+      trust.end();
+      if (await isTakenOver(run.id)) return;
+      if (await readResult(run.id)) return;
+      const derived = deriveOutcome(lastAssistant(ctx), event.aborted);
+      await writeResult({
+        version: 2,
+        runId: run.id,
+        ...derived,
+        sessionFile: ctx.sessionManager.getSessionFile() ?? null,
+        model: currentModel(ctx),
+        finishedAt: Date.now(),
+      });
+      ctx.shutdown();
     });
-    ctx.shutdown();
   });
 
   pi.on("session_shutdown", async (event, ctx) => {
-    trust.end();
-    if (event.reason !== "quit") return;
-    if (await isTakenOver(run.id)) return;
-    if (await readResult(run.id)) return;
-    const derived = deriveOutcome(lastAssistant(ctx), false, true);
-    await writeResult({
-      version: 2,
-      runId: run.id,
-      ...derived,
-      sessionFile: ctx.sessionManager.getSessionFile() ?? null,
-      model: currentModel(ctx),
-      finishedAt: Date.now(),
+    await serialized(async () => {
+      trust.end();
+      if (event.reason !== "quit") return;
+      if (await isTakenOver(run.id)) return;
+      if (await readResult(run.id)) return;
+      const derived = deriveOutcome(lastAssistant(ctx), false, true);
+      await writeResult({
+        version: 2,
+        runId: run.id,
+        ...derived,
+        sessionFile: ctx.sessionManager.getSessionFile() ?? null,
+        model: currentModel(ctx),
+        finishedAt: Date.now(),
+      });
     });
   });
 }

@@ -129,8 +129,12 @@ export async function buildChildArgv(
   continueSessionFile?: string,
 ): Promise<string[]> {
   const env = [`PI_SUBAGENTS_RUN_ID=${run.id}`];
-  for (const key of ["PI_SUBAGENTS_STATE_DIR", "PI_CODING_AGENT_DIR"]) {
-    if (process.env[key]) env.push(`${key}=${process.env[key]}`);
+  // Always pass the resolved absolute state dir so a child in another cwd finds the same run dir.
+  if (process.env.PI_SUBAGENTS_STATE_DIR?.trim()) {
+    env.push(`PI_SUBAGENTS_STATE_DIR=${stateDir()}`);
+  }
+  if (process.env.PI_CODING_AGENT_DIR?.trim()) {
+    env.push(`PI_CODING_AGENT_DIR=${resolve(process.env.PI_CODING_AGENT_DIR)}`);
   }
   const piBin = await findExecutable(process.env.PI_SUBAGENTS_PI ?? "pi");
   const paths = runPaths(run.id);
@@ -156,11 +160,13 @@ export async function buildChildArgv(
   args.push("-e", entry);
   if (continueSessionFile) args.push("--fork", continueSessionFile);
   // Pass normal prompts directly so the child Rex tab displays clean text rather than
-  // Pi's <file name=".../task.md"> attachment wrapper; fall back to @task.md for huge/@ tasks.
+  // Pi's <file name=".../task.md"> attachment wrapper; fall back to @task.md for huge, @, or / tasks
+  // (Pi interprets leading "/" as a slash command).
   const canInline =
     task !== undefined &&
     Buffer.byteLength(task) <= INLINE_TASK_MAX_BYTES &&
     !task.startsWith("@") &&
+    !task.trimStart().startsWith("/") &&
     !task.includes("\0");
   if (canInline) args.push("--", task);
   else args.push(`@${paths.task}`);
@@ -295,8 +301,8 @@ export class ConcurrencyGate {
   }
 
   async acquire(maxConcurrent: number, signal?: AbortSignal): Promise<() => void> {
-    if (signal?.aborted) throw new Error("Aborted before launch");
-    if (this.active >= maxConcurrent) {
+    while (this.active >= maxConcurrent) {
+      if (signal?.aborted) throw new Error("Aborted before launch");
       await new Promise<void>((resolve, reject) => {
         const entry = () => {
           signal?.removeEventListener("abort", onAbort);
@@ -311,6 +317,7 @@ export class ConcurrencyGate {
         signal?.addEventListener("abort", onAbort, { once: true });
       });
     }
+    if (signal?.aborted) throw new Error("Aborted before launch");
     return this.holdExisting();
   }
 }
@@ -498,8 +505,10 @@ export function attachToRun(options: {
   let recheckNeeded = false;
   let cancelPromise: Promise<RunRecord["status"]> | undefined;
   let settleDone: (outcome: RunOutcome) => void = () => undefined;
-  const done = new Promise<RunOutcome>((resolve) => {
+  let rejectDone: (error: unknown) => void = () => undefined;
+  const done = new Promise<RunOutcome>((resolve, reject) => {
     settleDone = resolve;
+    rejectDone = reject;
   });
 
   const paths = runPaths(run.id);
@@ -535,40 +544,43 @@ export function attachToRun(options: {
     if (finished) return;
     finished = true;
     cleanup();
+    try {
+      const result = forced?.result !== undefined ? forced.result : await readResult(run.id);
+      const taken = await isTakenOver(run.id);
+      run.waiting = null;
 
-    const result = forced?.result !== undefined ? forced.result : await readResult(run.id);
-    const taken = await isTakenOver(run.id);
-    run.waiting = null;
+      if (result && !taken) {
+        run.sessionFile = result.sessionFile;
+        run.model = result.model;
+      }
 
-    if (result && !taken) {
-      run.sessionFile = result.sessionFile;
-      run.model = result.model;
+      if (taken && !result) {
+        run.status = "taken_over";
+      } else if (forced) {
+        run.status = forced.status;
+        if (forced.diagnostic) run.diagnostic = forced.diagnostic;
+      } else if (result) {
+        run.status = result.outcome;
+      } else if (cancelled) {
+        run.status = "cancelled";
+      } else {
+        run.status = "failed";
+        const tail = run.rex ? await screenTail(run.rex) : null;
+        run.diagnostic = tail
+          ? `Exited without writing a result.\nLast terminal lines:\n${tail}`
+          : "Exited without writing a result.";
+      }
+
+      if (run.worktree && run.status !== "taken_over") {
+        run.worktree = await finishWorktree(run.worktree);
+      }
+      run.finishedAt = Date.now();
+      await writeRun(run);
+      onChange?.(run);
+      settleDone({ run, result });
+    } catch (error) {
+      rejectDone(error);
     }
-
-    if (taken && !result) {
-      run.status = "taken_over";
-    } else if (forced) {
-      run.status = forced.status;
-      if (forced.diagnostic) run.diagnostic = forced.diagnostic;
-    } else if (result) {
-      run.status = result.outcome;
-    } else if (cancelled) {
-      run.status = "cancelled";
-    } else {
-      run.status = "failed";
-      const tail = run.rex ? await screenTail(run.rex) : null;
-      run.diagnostic = tail
-        ? `Exited without writing a result.\nLast terminal lines:\n${tail}`
-        : "Exited without writing a result.";
-    }
-
-    if (run.worktree && run.status !== "taken_over") {
-      run.worktree = await finishWorktree(run.worktree);
-    }
-    run.finishedAt = Date.now();
-    await writeRun(run);
-    onChange?.(run);
-    settleDone({ run, result });
   };
 
   const checkDiskAndProcess = async () => {
@@ -689,6 +701,14 @@ export function attachToRun(options: {
         }
         if (!run.keepOpen && obs.location) {
           await closeBlock(obs.location).catch(() => undefined);
+        }
+        const after = await observeProcess(run.rex);
+        if (after.process.state !== "exited") {
+          // Rex couldn't confirm process exit (e.g. unreachable with keepOpen: true); keep reservation
+          // and allow retrying cancel instead of pretending the writer stopped.
+          cancelled = false;
+          cancelPromise = undefined;
+          return run.status;
         }
       }
       await finalize({ status: "cancelled", result: null });

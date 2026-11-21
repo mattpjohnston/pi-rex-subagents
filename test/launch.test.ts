@@ -73,10 +73,12 @@ if (args[0] === "block" && args[1] === "inspect") {
   console.log(JSON.stringify({ session_id: args[3], block: { block_id: blockId, window_id: blockId === "blk:detached" ? null : "win:1" } }));
   process.exit(0);
 }
+const closedFile = ${JSON.stringify(join(tmp, `closed-${mode}.txt`))};
 if (args[0] === "block" && args[1] === "call" && args[6] === "process") {
   const state = ${JSON.stringify(mode)};
-  if (state === "crash") {
-    console.log(JSON.stringify({ last_exit: { exit_code: 1 } }));
+  const isClosed = fs.existsSync(closedFile);
+  if (state === "crash" || isClosed) {
+    console.log(JSON.stringify({ last_exit: { exit_code: state === "crash" ? 1 : 0 } }));
   } else if (state === "complete") {
     const runsDir = ${JSON.stringify(join(tmp, "state", "runs"))};
     const done = fs.existsSync(runsDir) && fs.readdirSync(runsDir).some((id) =>
@@ -89,6 +91,7 @@ if (args[0] === "block" && args[1] === "call" && args[6] === "process") {
   process.exit(0);
 }
 if (args[0] === "block" && args[1] === "close") {
+  fs.writeFileSync(closedFile, "1");
   process.exit(0);
 }
 if (args[0] === "capture") {
@@ -214,18 +217,45 @@ describe("launch", () => {
 
     const fileFallback = await buildChildArgv(run, "/ext/index.ts", "@weird-prefix");
     expect(fileFallback.at(-1)).toMatch(/^@.*task\.md$/);
+
+    const slashFallback = await buildChildArgv(run, "/ext/index.ts", "/subagent-takeover");
+    expect(slashFallback.at(-1)).toMatch(/^@.*task\.md$/);
+
+    // Relative PI_SUBAGENTS_STATE_DIR is resolved to an absolute path for the child env.
+    const prev = process.env.PI_SUBAGENTS_STATE_DIR;
+    process.env.PI_SUBAGENTS_STATE_DIR = "./relative-state";
+    try {
+      const envArgv = await buildChildArgv(run, "/ext/index.ts", "hi");
+      const stateArg = envArgv.find((a) => a.startsWith("PI_SUBAGENTS_STATE_DIR="));
+      expect(stateArg).toMatch(/^PI_SUBAGENTS_STATE_DIR=\//);
+    } finally {
+      process.env.PI_SUBAGENTS_STATE_DIR = prev;
+    }
   });
 
-  it("enforces concurrency cap and supports abort while queued", async () => {
+  it("enforces concurrency cap, including when maxConcurrent is lowered below active count", async () => {
     const gate = new ConcurrencyGate();
-    const release1 = await gate.acquire(1);
-    const ac = new AbortController();
-    const queued = gate.acquire(1, ac.signal);
-    ac.abort();
-    await expect(queued).rejects.toThrow("Aborted while queued");
+    const release1 = await gate.acquire(2);
+    const release2 = await gate.acquire(2);
+    let acquired = false;
+    const queued = gate.acquire(1).then((rel) => {
+      acquired = true;
+      return rel;
+    });
     release1();
-    const release2 = await gate.acquire(1);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(acquired).toBe(false);
     release2();
+    const release3 = await queued;
+    expect(acquired).toBe(true);
+    release3();
+
+    const release4 = await gate.acquire(1);
+    const ac = new AbortController();
+    const aborted = gate.acquire(1, ac.signal);
+    ac.abort();
+    await expect(aborted).rejects.toThrow("Aborted while queued");
+    release4();
   });
 
   it("launches tab, split, float, and detached panes via user config placement", async () => {

@@ -111,32 +111,49 @@ export async function finishWorktree(worktree: WorktreeInfo): Promise<WorktreeIn
       };
     }
 
-    if (tip !== worktree.base) {
+    const isHeldElsewhere = async (commit: string, exclude: string[]) => {
+      if (commit === worktree.base) return true;
       const holders = (
         await git(worktree.repository, [
           "for-each-ref",
           "--format=%(refname)",
           "--contains",
-          tip,
+          commit,
           "refs/heads",
         ])
       )
         .split("\n")
-        .filter(
-          (ref) =>
-            ref && ref !== `refs/heads/${worktree.branch}` && ref !== `refs/heads/${activeBranch}`,
-        );
-      if (holders.length === 0) {
-        return {
-          ...worktree,
-          branch: activeBranch,
-          ...(diffStat ? { diffStat } : {}),
-          keptReason:
-            activeBranch !== worktree.branch
-              ? `unmerged commits on branch ${activeBranch}`
-              : "unmerged commits on branch",
-        };
-      }
+        .filter((ref) => ref && !exclude.includes(ref));
+      return holders.length > 0;
+    };
+
+    if (
+      !(await isHeldElsewhere(tip, [`refs/heads/${worktree.branch}`, `refs/heads/${activeBranch}`]))
+    ) {
+      return {
+        ...worktree,
+        branch: activeBranch,
+        ...(diffStat ? { diffStat } : {}),
+        keptReason:
+          activeBranch !== worktree.branch
+            ? `unmerged commits on branch ${activeBranch}`
+            : "unmerged commits on branch",
+      };
+    }
+
+    // Also check the original subagent/* branch in case the child committed on it then checked out base.
+    const origTip = await git(worktree.repository, [
+      "rev-parse",
+      "--verify",
+      `refs/heads/${worktree.branch}`,
+    ]).catch(() => "");
+    if (origTip && !(await isHeldElsewhere(origTip, [`refs/heads/${worktree.branch}`]))) {
+      return {
+        ...worktree,
+        branch: worktree.branch,
+        ...(diffStat ? { diffStat } : {}),
+        keptReason: `unmerged commits on branch ${worktree.branch}`,
+      };
     }
 
     await git(worktree.repository, ["worktree", "remove", worktree.path]);
@@ -195,7 +212,8 @@ export async function removeSubagentWorktree(
 ): Promise<void> {
   const mainRoot = await mainRepoRoot(repoRoot);
   await git(mainRoot, ["worktree", "remove", ...(force ? ["--force"] : []), path]);
+  // Use safe -d (not -D) so removing a checkout never silently destroys unmerged branch commits.
   if (branch && branch !== "(detached)") {
-    await git(mainRoot, ["branch", "-D", branch]).catch(() => undefined);
+    await git(mainRoot, ["branch", "-d", branch]).catch(() => undefined);
   }
 }

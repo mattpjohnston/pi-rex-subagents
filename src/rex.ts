@@ -380,6 +380,7 @@ export class RexEvents {
     child.on("error", () => undefined);
     child.once("close", () => {
       lines.close();
+      if (this.child !== child) return;
       this.child = undefined;
       if (!this.stopped && this.watched.size > 0) {
         this.reconnect = setTimeout(() => this.start(), 1000);
