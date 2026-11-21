@@ -45,7 +45,12 @@ async function handleWorktrees(
     return;
   }
   const livePaths = new Set(
-    [...liveRuns.values()].map((entry) => entry.run.worktree?.path).filter(Boolean),
+    [
+      ...(await listRuns())
+        .filter((r) => !isTerminal(r.status) || r.status === "taken_over")
+        .map((r) => r.worktree?.path),
+      ...[...liveRuns.values()].map((entry) => entry.run.worktree?.path),
+    ].filter(Boolean),
   );
   if (!ctx.hasUI) {
     ctx.ui.notify(

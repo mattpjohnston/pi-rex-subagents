@@ -32,6 +32,7 @@ import {
   listRuns,
   readResult,
   readRun,
+  writeRun,
   type RunRecord,
 } from "./store.ts";
 
@@ -417,6 +418,13 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       ) {
         continue;
       }
+      if (!run.rex) {
+        run.status = "failed";
+        run.diagnostic = "Parent exited before launch";
+        run.finishedAt = Date.now();
+        await writeRun(run);
+        continue;
+      }
       let releaseRepo: (() => void) | undefined;
       if (run.access === "write" && !run.worktree && run.repoRoot) {
         const repoKey = run.repoRoot;
@@ -466,6 +474,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     context = ctx;
     clearTimeout(coalesceTimer);
     coalesceTimer = undefined;
+    // Anything committed by boundary hooks is now on the branch; clear any rejected drafts so they retry.
+    inflightDeliveries.clear();
     if (event.aborted) return;
     await deliverPending(ctx, true);
   });

@@ -143,7 +143,7 @@ export async function openPane(options: {
     const reply = await rexJson(args);
     const blockId = Array.isArray(reply.block_ids) ? reply.block_ids[0] : undefined;
     if (typeof blockId !== "string") throw new Error("Rex split returned no block ID");
-    const located = await locateBlock(blockId, sessionId);
+    const located = await locateBlock(blockId, sessionId).catch(() => null);
     return located ?? { sessionId, windowId: null, blockId };
   }
 

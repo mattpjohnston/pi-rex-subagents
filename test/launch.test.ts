@@ -255,7 +255,24 @@ describe("launch", () => {
     const aborted = gate.acquire(1, ac.signal);
     ac.abort();
     await expect(aborted).rejects.toThrow("Aborted while queued");
+
+    // Slot handoff on release must transfer synchronously so a concurrent acquire cannot exceed maxConcurrent.
+    let waiterWon = false;
+    let snuckIn = false;
+    const waiter = gate.acquire(1).then((rel) => {
+      waiterWon = true;
+      return rel;
+    });
     release4();
+    const contender = gate.acquire(1).then((rel) => {
+      snuckIn = true;
+      return rel;
+    });
+    const relWaiter = await waiter;
+    expect(waiterWon).toBe(true);
+    expect(snuckIn).toBe(false);
+    relWaiter();
+    (await contender)();
   });
 
   it("launches tab, split, float, and detached panes via user config placement", async () => {

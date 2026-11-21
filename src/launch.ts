@@ -285,40 +285,55 @@ export function coalesceDelayMs(): number {
 /** Simple in-memory concurrency limiter for a parent Pi process. */
 export class ConcurrencyGate {
   private active = 0;
-  private readonly queue: (() => void)[] = [];
+  private readonly queue: { max: number; wake: () => void }[] = [];
 
-  /** Accounts for an already-running child reattached on reload/resume. */
-  holdExisting(): () => void {
-    this.active += 1;
+  private makeRelease(): () => void {
     let released = false;
     return () => {
       if (released) return;
       released = true;
       this.active -= 1;
-      const next = this.queue.shift();
-      next?.();
+      const idx = this.queue.findIndex((waiter) => this.active < waiter.max);
+      if (idx >= 0) {
+        const [waiter] = this.queue.splice(idx, 1);
+        // Transfer the slot synchronously before resolving the waiter's microtask.
+        this.active += 1;
+        waiter?.wake();
+      }
     };
   }
 
+  /** Accounts for an already-running child reattached on reload/resume. */
+  holdExisting(): () => void {
+    this.active += 1;
+    return this.makeRelease();
+  }
+
   async acquire(maxConcurrent: number, signal?: AbortSignal): Promise<() => void> {
-    while (this.active >= maxConcurrent) {
-      if (signal?.aborted) throw new Error("Aborted before launch");
-      await new Promise<void>((resolve, reject) => {
-        const entry = () => {
+    if (signal?.aborted) throw new Error("Aborted before launch");
+    if (this.active < maxConcurrent) return this.holdExisting();
+    await new Promise<void>((resolve, reject) => {
+      const waiter = {
+        max: maxConcurrent,
+        wake: () => {
           signal?.removeEventListener("abort", onAbort);
           resolve();
-        };
-        const onAbort = () => {
-          const idx = this.queue.indexOf(entry);
-          if (idx >= 0) this.queue.splice(idx, 1);
-          reject(new Error("Aborted while queued"));
-        };
-        this.queue.push(entry);
-        signal?.addEventListener("abort", onAbort, { once: true });
-      });
+        },
+      };
+      const onAbort = () => {
+        const idx = this.queue.indexOf(waiter);
+        if (idx >= 0) this.queue.splice(idx, 1);
+        reject(new Error("Aborted while queued"));
+      };
+      this.queue.push(waiter);
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
+    const release = this.makeRelease();
+    if (signal?.aborted) {
+      release();
+      throw new Error("Aborted before launch");
     }
-    if (signal?.aborted) throw new Error("Aborted before launch");
-    return this.holdExisting();
+    return release;
   }
 }
 
@@ -514,6 +529,13 @@ export function attachToRun(options: {
   const paths = runPaths(run.id);
   let watcher: FSWatcher | undefined;
   let fallbackTimer: ReturnType<typeof setInterval> | undefined;
+  // Chain per-run writes so a late program_status write can never overwrite terminal run.json.
+  let writeChain: Promise<void> = Promise.resolve();
+  const persistRun = (swallow = true): Promise<void> => {
+    const next = writeChain.then(() => writeRun(run));
+    writeChain = next.catch(() => undefined);
+    return swallow ? writeChain : next;
+  };
 
   const cleanup = () => {
     watcher?.close();
@@ -556,13 +578,13 @@ export function attachToRun(options: {
 
       if (taken && !result) {
         run.status = "taken_over";
+      } else if (cancelled) {
+        run.status = "cancelled";
       } else if (forced) {
         run.status = forced.status;
         if (forced.diagnostic) run.diagnostic = forced.diagnostic;
       } else if (result) {
         run.status = result.outcome;
-      } else if (cancelled) {
-        run.status = "cancelled";
       } else {
         run.status = "failed";
         const tail = run.rex ? await screenTail(run.rex) : null;
@@ -575,7 +597,7 @@ export function attachToRun(options: {
         run.worktree = await finishWorktree(run.worktree);
       }
       run.finishedAt = Date.now();
-      await writeRun(run);
+      await persistRun(false);
       onChange?.(run);
       settleDone({ run, result });
     } catch (error) {
@@ -627,7 +649,7 @@ export function attachToRun(options: {
   const onRexEvent = (event: BlockEvent) => {
     if (finished) return;
     if (event.name === "child_exited") {
-      void checkDiskAndProcess();
+      void checkDiskAndProcess().catch(() => undefined);
       return;
     }
     if (event.name === "program_status_changed") {
@@ -650,12 +672,12 @@ export function attachToRun(options: {
                 : "Waiting for input",
           since: Date.now(),
         };
-        void writeRun(run);
+        void persistRun();
         onWaiting?.(run);
         onChange?.(run);
       } else if (run.waiting) {
         run.waiting = null;
-        void writeRun(run);
+        void persistRun();
         onChange?.(run);
       }
     }
@@ -712,7 +734,7 @@ export function attachToRun(options: {
         }
       }
       await finalize({ status: "cancelled", result: null });
-      return "cancelled";
+      return run.status;
     })();
     return cancelPromise;
   };
@@ -727,14 +749,14 @@ export function attachToRun(options: {
   }
   try {
     watcher = watch(paths.dir, () => {
-      void checkDiskAndProcess();
+      void checkDiskAndProcess().catch(() => undefined);
     });
   } catch {
     // Fallback interval covers environments where fs.watch isn't available.
   }
   // Lightweight safety check ONLY while this run is actively live (cleared immediately on exit).
   fallbackTimer = setInterval(() => {
-    void checkDiskAndProcess();
+    void checkDiskAndProcess().catch(() => undefined);
   }, 1500);
   signal?.addEventListener("abort", onAbort, { once: true });
 
@@ -744,7 +766,7 @@ export function attachToRun(options: {
   if (signal?.aborted) {
     void cancelRun();
   } else {
-    void checkDiskAndProcess();
+    void checkDiskAndProcess().catch(() => undefined);
   }
   return handle;
 }
